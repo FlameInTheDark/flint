@@ -1,0 +1,147 @@
+name: CI and release
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  GOWORK: 'off'
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Install Linux test fonts
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-dejavu-core fonts-dejavu-extra fonts-liberation
+      - run: go build ./...
+      - name: Test on Linux
+        if: runner.os == 'Linux'
+        run: go test ./...
+      # The shell session cases expect a Unix sh on PATH; ConPTY itself
+      # is covered by the remaining Windows-specific tests.
+      - name: Test on Windows
+        if: runner.os == 'Windows'
+        run: >-
+          go test ./... -skip
+          '^(TestWindowsCommandLineQuotes|TestSessionEchoAndOneShell|TestSessionStreamsIncrementally|TestSessionNestedSubshell|TestSessionCdFollows|TestInterruptPassesCtrlC|TestCommandsQueueWhileRunning|TestSessionEnv|TestRespawnAfterExit|TestSessionStartDir)$'
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: semantic-release-main
+      cancel-in-progress: false
+    outputs:
+      tag: ${{ steps.publish.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Publish release
+        id: publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from 'node:fs';
+          import semanticRelease from 'semantic-release';
+
+          const result = await semanticRelease();
+          if (result) {
+            appendFileSync(process.env.GITHUB_OUTPUT, `tag=${result.nextRelease.gitTag}\n`);
+          }
+          NODE
+
+  binaries:
+    needs: release
+    if: needs.release.outputs.tag != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [linux, windows]
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Build and package
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '0'
+        run: |
+          name="flint-${TAG}-${GOOS}-${GOARCH}"
+          mkdir -p dist "$name"
+          cp LICENSE NOTICE "$name/"
+          if [[ "$GOOS" == windows ]]; then
+            go build -trimpath -ldflags='-H windowsgui' -o "$name/flint.exe" .
+            zip -qr "dist/$name.zip" "$name"
+          else
+            go build -trimpath -o "$name/flint" .
+            tar -czf "dist/$name.tar.gz" "$name"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flint-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+
+  assets:
+    needs: [release, binaries]
+    if: needs.release.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: flint-*
+          path: dist
+          merge-multiple: true
+      - name: Attach archives and SHA-256 checksums
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          shopt -s nullglob
+          archives=(flint-*.zip flint-*.tar.gz)
+          if [[ ${#archives[@]} -ne 4 ]]; then
+            echo 'Expected four Flint release archives.' >&2
+            exit 1
+          fi
+          sha256sum "${archives[@]}" > "flint-${TAG}-checksums.txt"
+          gh release upload "$TAG" --clobber "${archives[@]}" "flint-${TAG}-checksums.txt"

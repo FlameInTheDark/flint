@@ -1,0 +1,11 @@
+/go.work
+/go.work.sum
+/flint
+/flint.exe
+/frames/
+*.cpu
+*.mem
+*.test
+*.test.exe
+/node_modules/
+/dist/
