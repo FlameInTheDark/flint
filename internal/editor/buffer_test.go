@@ -55,24 +55,6 @@ func TestTabStopExpansion(t *testing.T) {
 		}
 	}
 
-	// The caret and click mappings stay consistent with the rendering.
-	line := "ab\tcd"                              // renders as "ab  cd"
-	if got := displayRuneCol(line, 3); got != 4 { // caret after the tab: col 4
-		t.Errorf("displayRuneCol after tab = %d, want 4", got)
-	}
-	if got := displayRuneCol(line, 2); got != 2 { // caret before the tab: col 2
-		t.Errorf("displayRuneCol before tab = %d, want 2", got)
-	}
-	// Clicking anywhere inside the expanded tab (cols 2..3) snaps onto it.
-	for click := 2; click <= 3; click++ {
-		if got := realRuneCol(line, click); got != 2 {
-			t.Errorf("realRuneCol(%d) = %d, want 2 (the tab itself)", click, got)
-		}
-	}
-	if got := displayByteCol(line, 3); got != 4 { // byte 3 is 'c', past the tab
-		t.Errorf("displayByteCol = %d, want 4", got)
-	}
-
 	// Buffer line widths agree with DisplayCols for tab-indented text.
 	b := mk(t, "\tfunc main() {\n\t\tx := 1\n}")
 	if got := b.LineCols(0); got != DisplayCols("\tfunc main() {") {

@@ -30,6 +30,7 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 	if ws.measuredFontPx != ws.Cfg.Editor.FontSize {
 		ws.measureMetrics(w)
 	}
+	ws.codeShaper = editor.NewCodeShaper(w, float32(ws.Cfg.Editor.FontSize))
 	t := ws.Theme()
 	winSize := w.LogicalContentSize()
 	if winSize.Width.AsF32() <= 0 {
@@ -76,6 +77,11 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 		}
 	}
 	menus := MenuDefs(update, w, quit, ws)
+	if idx := ws.Menu.Open; ws.Popup != nil && idx >= 0 && idx < len(menus) && menus[idx].Title == "Run" {
+		// A process can exit while the Run menu is open. Keep its actions
+		// in sync with the toolbar without dismissing the menu.
+		ws.Popup.Items = menus[idx].Items()
+	}
 	openMenu := func(idx int, x float32) {
 		update(func(state *Workspace) {
 			state.Menu.Open = idx
@@ -144,6 +150,21 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 	if ws.Root != "" {
 		editLaunch = func(win *gpui.Window) { ws.editLaunch(update, win) }
 	}
+	var stopGo func(*gpui.Window)
+	if ws.goTaskRunning() {
+		stopGo = func(win *gpui.Window) { ws.startGoAction(goStop, update, win) }
+	}
+	var debugSnap debugger.Snapshot
+	var stopDebug func(*gpui.Window)
+	if session := ws.debug.session; session != nil {
+		debugSnap = session.Snapshot()
+		if debugSnap.State != debugger.Finished {
+			stopDebug = func(win *gpui.Window) {
+				session.Stop()
+				win.Refresh()
+			}
+		}
+	}
 	menuBar := ui.RenderMenuBar(ui.MenuBarConfig{
 		Menus:       menus,
 		State:       &ws.Menu,
@@ -158,6 +179,9 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 			win.Refresh()
 		},
 		OnRun:       func(win *gpui.Window) { ws.startGoAction(goRun, update, win) },
+		OnStop:      stopGo,
+		OnDebug:     func(win *gpui.Window) { ws.startGoAction(goDebug, update, win) },
+		OnStopDebug: stopDebug,
 		OnRunConfig: editLaunch,
 		RunTarget:   ws.launches.Active,
 		OnBuild:     func(win *gpui.Window) { ws.startGoAction(goBuild, update, win) },
@@ -312,10 +336,6 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 	// Editor pane
 	// -----------------------------------------------------------------------
 	buf := ws.Buf()
-	var debugSnap debugger.Snapshot
-	if s := ws.debug.session; s != nil {
-		debugSnap = s.Snapshot()
-	}
 	// The editor lives inside an overflow-hidden, flex-filling wrapper:
 	// the pane's own content (visible code rows, gutter) must never
 	// contribute its height to the workspace row's automatic minimum —
@@ -421,24 +441,27 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 						w.Focus(ws.FocusEditor)
 					}
 				}
+				_, caretLineWidth := ws.codeShaper.CaretMetrics(buf, t)
 				editorArea.Child(editor.RenderPane(editor.PaneConfig{
-					Buf:           buf,
-					Theme:         t,
-					Metrics:       editor.Metrics{CharAdvance: ws.CharAdvance, LineHeight: ws.LineHeight},
-					Scroll:        ws.scroll(),
-					ScrollF:       ws.scrollF(),
-					ScrollX:       ws.scrollX(),
-					ViewportH:     ws.paneHeight(),
-					ViewportW:     ws.paneWidth(),
-					ShowGutter:    ws.ShowLineNumbers,
-					Breakpoints:   marks,
-					ExecutionLine: execution,
-					OnBreakpoint:  toggleBreakpoint,
-					ShowMinimap:   ws.Cfg.Editor.ShowMinimap,
-					FontSizePx:    float32(ws.Cfg.Editor.FontSize),
-					Find:          ws.Find,
-					Focus:         ws.FocusEditor,
-					CaretVisible:  ws.CaretVisible,
+					Buf:            buf,
+					Theme:          t,
+					Metrics:        editor.Metrics{CharAdvance: ws.CharAdvance, LineHeight: ws.LineHeight},
+					Shaper:         ws.codeShaper,
+					CaretLineWidth: caretLineWidth,
+					Scroll:         ws.scroll(),
+					ScrollF:        ws.scrollF(),
+					ScrollX:        ws.scrollX(),
+					ViewportH:      ws.paneHeight(),
+					ViewportW:      ws.paneWidth(),
+					ShowGutter:     ws.ShowLineNumbers,
+					Breakpoints:    marks,
+					ExecutionLine:  execution,
+					OnBreakpoint:   toggleBreakpoint,
+					ShowMinimap:    ws.Cfg.Editor.ShowMinimap,
+					FontSizePx:     float32(ws.Cfg.Editor.FontSize),
+					Find:           ws.Find,
+					Focus:          ws.FocusEditor,
+					CaretVisible:   ws.CaretVisible,
 					OnScrollX: func(dx float32) {
 						update(func(state *Workspace) { state.addScrollX(dx) })
 					},
@@ -1021,8 +1044,10 @@ func renderFindBar(ws *Workspace, t ui.Theme, update updateFn, focusEditor func(
 			update(func(s *Workspace) {
 				if s.Find != nil {
 					f(&s.FindInput)
-					s.Find.Query = s.FindInput.String()
-					s.RefreshFind()
+					if query := s.FindInput.String(); s.Find.Query != query {
+						s.Find.Query = query
+						s.RefreshFind()
+					}
 				}
 			})
 		},

@@ -122,8 +122,12 @@ func MenuDefs(update updateFn, w *gpui.Window, quit func(), ws *Workspace) []ui.
 				state = s.Snapshot().State
 			}
 			control := func(command debugger.Action) func() { return act(func(s *Workspace) { s.debugControl(command) }) }
+			run := ui.MenuItem{Label: "Run Go Package", Shortcut: "Shift+F10", Action: func() { ws.startGoAction(goRun, update, w) }}
+			if ws.goTaskRunning() {
+				run = ui.MenuItem{Label: "Stop Go Task", Shortcut: "Ctrl+F2", Action: func() { ws.startGoAction(goStop, update, w) }}
+			}
 			return []ui.MenuItem{
-				{Label: "Run Go Package", Shortcut: "Shift+F10", Action: func() { ws.startGoAction(goRun, update, w) }},
+				run,
 				{Label: "Edit Run Configurations…", Disabled: ws.Root == "", Action: func() { ws.editLaunch(update, w) }},
 				{Label: "Build Go Project", Shortcut: "Ctrl+F9", Action: func() { ws.startGoAction(goBuild, update, w) }},
 				{Label: "Test Go Project", Action: func() { ws.startGoAction(goTest, update, w) }},
@@ -140,11 +144,6 @@ func MenuDefs(update updateFn, w *gpui.Window, quit func(), ws *Workspace) []ui.
 				{Label: "Stop Debugging", Shortcut: "Shift+F5", Disabled: state == "" || state == debugger.Finished || state == debugger.Stopping, Action: func() {
 					if s := ws.debug.session; s != nil {
 						s.Stop()
-					}
-				}},
-				{Label: "Stop Go Task", Disabled: ws.GoTask == nil || !ws.GoTask.Snapshot().Running, Action: func() {
-					if ws.GoTask != nil {
-						ws.GoTask.Stop()
 					}
 				}},
 			}

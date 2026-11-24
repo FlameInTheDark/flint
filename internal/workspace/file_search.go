@@ -374,7 +374,9 @@ func renderFileSearch(ws *Workspace, t ui.Theme, update updateFn, w *gpui.Window
 			update(func(st *Workspace) {
 				if st.FileSearch == s {
 					before := s.Filter.String()
-					s.Filter.Key(ev)
+					if s.Filter.Key(ev, win) {
+						win.StopPropagation()
+					}
 					changed = before != s.Filter.String()
 					if changed {
 						s.Selected = 0
@@ -401,8 +403,16 @@ func renderFileSearch(ws *Workspace, t ui.Theme, update updateFn, w *gpui.Window
 			}
 			tabs.Child(button.Child(elements.NewText(tab.label).WithTextColor(color)))
 		}
+		input := ui.RenderInput(ui.InputConfig{State: &s.Filter, Theme: t, Placeholder: searchTabs[s.Mode].placeholder,
+			Update: func(f func(*ui.InputState)) {
+				update(func(st *Workspace) {
+					if st.FileSearch == s {
+						f(&s.Filter)
+					}
+				})
+			}})
 		search := elements.NewDiv().Flex().ItemsCenter().H(ui.Px(46)).FlexShrink(0).Px(ui.DefPx(12)).Gap(ui.DefPx(10)).BorderB_1().BorderColor(t.Surface1).
-			Child(ui.ToolbarIcon("search", t.Accent)).Child(elements.NewDiv().Flex1().Child(ui.RenderInput(ui.InputConfig{State: &s.Filter, Theme: t, Placeholder: searchTabs[s.Mode].placeholder})))
+			Child(ui.ToolbarIcon("search", t.Accent)).Child(elements.NewDiv().Flex1().Child(input))
 		list := elements.NewDiv().Flex().FlexCol().Flex1().OverflowHidden().P(ui.DefPx(6)).OnScroll(func(ev platform.ScrollEvent, win *gpui.Window) {
 			if dy := ev.Delta.PixelDelta(geometry.Px(24)).Y.AsF32(); dy != 0 && len(visible) > 0 {
 				delta := 3

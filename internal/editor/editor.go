@@ -3,13 +3,13 @@ package editor
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
 	gc "github.com/FlameInTheDark/go-gpui/color"
 	"github.com/FlameInTheDark/go-gpui/elements"
-	"github.com/FlameInTheDark/go-gpui/font"
 	"github.com/FlameInTheDark/go-gpui/geometry"
 	"github.com/FlameInTheDark/go-gpui/gpui"
 	"github.com/FlameInTheDark/go-gpui/platform"
@@ -82,6 +82,10 @@ type PaneConfig struct {
 	Buf     *Buffer
 	Theme   ui.Theme
 	Metrics Metrics
+	Shaper  CodeShaper
+	// CaretLineWidth comes from the styled shaping, not the monospace
+	// advance estimate (fallback glyphs may be wider).
+	CaretLineWidth float32
 	// Scroll is the first visible line (virtualized scrolling). The
 	// whole-row paths (keys, caret, seeks) read it; it is the scroll
 	// target rounded to rows.
@@ -195,11 +199,6 @@ func HighlightCached(line, lang string, p Palette) []text.TextRun {
 // workspace reuses it to size the code column).
 func GutterWidth(lines int, adv float32) float32 { return gutterWidth(lines, adv) }
 
-// DisplayRuneCol converts a rune column within a raw line to its display
-// column (tabs advance to the next tab stop). The workspace uses it to keep
-// the caret inside the horizontally panned view.
-func DisplayRuneCol(line string, runeCol int) int { return displayRuneCol(line, runeCol) }
-
 // GutterLeftInset is the gutter's left inset (logical px): the leftmost
 // digits - or the code text when line numbers are hidden - never touch the
 // pane's left edge (the upstream editor keeps the same breathing room).
@@ -232,52 +231,22 @@ func absF(v float32) float32 {
 	return v
 }
 
-// hitDisplayColumn resolves a click x (relative to the line's text origin)
-// to the nearest glyph boundary of the shaped display line: the same shaping
-// the renderer paints, so a click between two letters lands exactly between
-// them (upstream hit-tests the shaped line too). Falls back to the uniform
-// monospace-advance model when the text system is unavailable.
-func hitDisplayColumn(w *gpui.Window, disp string, x, fallbackAdvance float32) int {
-	fallback := func() int {
-		col := int(x/fallbackAdvance + 0.5)
-		if col < 0 {
-			col = 0
-		}
-		return col
+// CodeViewportWidth is shared by the drawing and caret-reveal paths.
+func CodeViewportWidth(paneWidth float32, lineCount int, advance float32, gutter, minimap bool) float32 {
+	width := paneWidth - 1
+	if minimap && paneWidth > 0 {
+		width -= RailWidth
 	}
-	sys := w.TextSystem()
-	if sys == nil || disp == "" {
-		return fallback()
+	if gutter {
+		width -= gutterWidth(lineCount, advance)
+	} else {
+		width -= GutterLeftInset
 	}
-	fid, ok := sys.FontID(font.Font{Family: "Monospace", Weight: font.WeightNormal})
-	if !ok {
-		fid, _ = sys.FontID(font.Font{Weight: font.WeightNormal})
-	}
-	ts := style.DefaultTextStyle()
-	l := sys.LayoutLine(disp, ts.FontSize.ToPixels(w.RemSize()), []text.FontRun{{Len: len(disp), FontID: fid}})
-	if l == nil {
-		return fallback()
-	}
-	// Boundaries: 0 (line start), each glyph's left edge, then the line's
-	// full width (after the last glyph). The boundary before glyph g covers
-	// g.Index bytes = the runes counted so far. Pick the nearest boundary;
-	// exact ties round up (the cursor goes after the character, matching the
-	// uniform-advance model's behavior).
-	best, bestDist := 0, absF(x)
-	runes, prevByte := 0, 0
-	for _, sr := range l.Runs {
-		for _, g := range sr.Glyphs {
-			runes += utf8.RuneCountInString(disp[prevByte:g.Index])
-			prevByte = g.Index
-			if d := absF(x - g.Position.X.AsF32()); d <= bestDist {
-				best, bestDist = runes, d
-			}
-		}
-	}
-	if d := absF(x - l.Width.AsF32()); d <= bestDist {
-		best = utf8.RuneCountInString(disp)
-	}
-	return best
+	return max(40, width)
+}
+
+func CodeContentWidth(b *Buffer, advance, shapedLineWidth float32) float32 {
+	return max(float32(b.MaxLineCols())*advance, shapedLineWidth) + 16
 }
 
 // maxScroll clamps the first visible line.
@@ -294,7 +263,7 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 	t := cfg.Theme
 	buf := cfg.Buf
 	m := cfg.Metrics
-	lineH := m.LineHeight
+	lineH := max(1, m.LineHeight)
 
 	total := buf.LineCount()
 	visible := m.VisibleLines(cfg.ViewportH)
@@ -337,13 +306,8 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 	if cfg.ViewportW > 0 && cfg.ShowMinimap {
 		railW = RailWidth
 	}
-	paneW := cfg.ViewportW
-	codeW := paneW - railW - 1 // the gutter border
-	codeW -= gutterW           // the gutter column (numbers or the slim hidden spacer)
-	if codeW < 40 {
-		codeW = 40
-	}
-	contentW := float32(buf.MaxLineCols())*m.CharAdvance + 16 // + column padding
+	codeW := CodeViewportWidth(cfg.ViewportW, total, m.CharAdvance, cfg.ShowGutter, cfg.ShowMinimap)
+	contentW := CodeContentWidth(buf, m.CharAdvance, cfg.CaretLineWidth)
 	maxScrollX := contentW - codeW
 	if maxScrollX < 0 {
 		maxScrollX = 0
@@ -356,43 +320,56 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 		scrollX = maxScrollX
 	}
 
-	// positionToOffset maps a window position to a buffer offset. The
-	// listener runs on the CODE column, so the hitbox origin is the exact
-	// text origin (the rows render their text at the column's left edge
-	// with no padding) — never a gutter-width estimate. The column comes
-	// from the shaped display line's nearest glyph boundary (the same
-	// shaping the renderer paints), so a click between two letters lands
-	// exactly between them.
+	lang, palette := buf.LanguageOf(), paletteOf(t)
+	lines := make([]codeLine, max(0, last-first+1))
+	// Use the laid-out rows, not viewport Y divided by a nominal height.
+	// Their actual positions include any fractional vertical pan and flex
+	// positioning that the frame used. Extrapolation is only for drags or
+	// caret clicks outside the laid-out rows (e.g. below the last line).
+	lineForY := func(w *gpui.Window, y geometry.Pixels, extrapolate bool) (int, bool) {
+		if len(lines) == 0 {
+			return 0, false
+		}
+		slot := sort.Search(len(lines), func(i int) bool {
+			return y < w.ElementBounds(lines[i].row).Bottom()
+		})
+		if slot < len(lines) && y >= w.ElementBounds(lines[slot].row).Origin.Y {
+			return first + slot, true
+		}
+		if !extrapolate {
+			return 0, false
+		}
+		startY := w.ElementBounds(lines[0].row).Origin.Y
+		row := first + int(math.Floor(float64((y-startY).AsF32()/lineH)))
+		return min(max(row, 0), total-1), true
+	}
+	lineAt := func(line int, w *gpui.Window, fallbackX float32) (codeLine, *text.LineLayout, float32) {
+		if line >= first && line <= last {
+			l := lines[line-first]
+			if l.element != nil {
+				if shaped := l.element.Layout(); shaped != nil {
+					return l, shaped, w.ElementBounds(l.element).Origin.X.AsF32()
+				}
+			}
+		}
+		// Dragging past the viewport can target a row that wasn't painted.
+		l := newCodeLine(buf.Line(line))
+		shaped := cfg.Shaper.shape(l, lang, palette)
+		return l, shaped, fallbackX + visualOriginShift(shaped).AsF32()
+	}
+	// positionToOffset maps through the actual laid-out text origin and
+	// shaped caret slots, then takes the result back to a buffer byte.
 	positionToOffset := func(pos geometry.Point[geometry.Pixels], w *gpui.Window) int {
 		bounds := geometry.Bounds[geometry.Pixels]{}
 		if hb, ok := w.ListenerHitbox(); ok {
 			bounds = hb.Bounds
 		}
-		localY := pos.Y.AsF32() - float32(bounds.Origin.Y)
-		localX := pos.X.AsF32() - float32(bounds.Origin.X)
-		// The visible window slides by frac rows: undo the slide so a
-		// click during the ease lands on the row actually under the
-		// pointer (at rest frac == 0 and this is the plain mapping).
-		line := first + int((localY+frac*lineH)/lineH)
-		if line < 0 {
-			line = 0
-		}
-		if line > total-1 {
-			line = total - 1
-		}
-		if line < 0 {
+		line, ok := lineForY(w, pos.Y, true)
+		if !ok {
 			return 0
 		}
-		x := localX + scrollX // undo the horizontal pan
-		lineText := buf.Line(line)
-		col := hitDisplayColumn(w, DisplayLine(lineText), x, m.CharAdvance)
-		if col < 0 {
-			col = 0
-		}
-		if col > DisplayCols(lineText) {
-			col = DisplayCols(lineText)
-		}
-		return buf.LCToOffset(line, runeOffset(lineText, realRuneCol(lineText, col)))
+		l, shaped, originX := lineAt(line, w, bounds.Origin.X.AsF32()-scrollX)
+		return buf.LCToOffset(line, l.caretAt(shaped, pos.X.AsF32()-originX))
 	}
 
 	// Navigation must target the glyph actually clicked, rather than the
@@ -403,47 +380,27 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 		if !ok {
 			return 0, false
 		}
-		localY := pos.Y.AsF32() - hb.Bounds.Origin.Y.AsF32()
-		if localY < 0 || localY >= cfg.ViewportH {
+		if pos.Y < hb.Bounds.Origin.Y || pos.Y >= hb.Bounds.Bottom() {
 			return 0, false
 		}
-		line := first + int((localY+frac*lineH)/lineH)
-		if line < 0 || line >= total {
+		line, ok := lineForY(w, pos.Y, false)
+		if !ok {
 			return 0, false
 		}
-		lineText := buf.Line(line)
-		display := DisplayLine(lineText)
-		x := pos.X.AsF32() - hb.Bounds.Origin.X.AsF32() + scrollX
-		if x < 0 || display == "" {
+		l, shaped, originX := lineAt(line, w, hb.Bounds.Origin.X.AsF32()-scrollX)
+		if shaped == nil || l.display == "" {
 			return 0, false
 		}
-		col := int(x / m.CharAdvance)
-		if sys := w.TextSystem(); sys != nil {
-			fid, found := sys.FontID(font.Font{Family: "Monospace", Weight: font.WeightNormal})
-			if !found {
-				fid, _ = sys.FontID(font.Font{Weight: font.WeightNormal})
-			}
-			ts := style.DefaultTextStyle()
-			fontSize := ts.FontSize.ToPixels(w.RemSize())
-			if cfg.FontSizePx > 0 {
-				fontSize = geometry.Px(cfg.FontSizePx)
-			}
-			layout := sys.LayoutLine(display, fontSize, []text.FontRun{{Len: len(display), FontID: fid}})
-			if layout != nil {
-				index, inside := layout.IndexForX(geometry.Px(x))
-				if !inside || index < 0 || index >= len(display) {
-					return 0, false
-				}
-				col = utf8.RuneCountInString(display[:index])
-			}
-		} else if col >= DisplayCols(lineText) {
+		penX := geometry.Px(pos.X.AsF32()-originX) + shaped.XForIndex(0)
+		index, inside := shaped.IndexForX(penX)
+		if penX < 0 || !inside || index < 0 || index >= len(l.display) {
 			return 0, false
 		}
-		byteCol := runeOffset(lineText, realRuneCol(lineText, col))
-		if byteCol >= len(lineText) {
+		byteCol, _ := l.sourceByte(index)
+		if byteCol >= len(l.source) {
 			return 0, false
 		}
-		r, _ := utf8.DecodeRuneInString(lineText[byteCol:])
+		r, _ := utf8.DecodeRuneInString(l.source[byteCol:])
 		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && !unicode.IsMark(r) && r != '_' && r != '$' {
 			return 0, false
 		}
@@ -466,7 +423,6 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 		}
 	}
 
-	lang := buf.LanguageOf()
 	selStart, selEnd := buf.Selection()
 	// One cursor-line lookup per frame: the previous version called
 	// isCursorLine per gutter row and per code row, each converting the
@@ -517,7 +473,7 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 			}
 			num := fmt.Sprintf("%d", i+1)
 			numRow := elements.NewDiv().
-				H(ui.Px(lineH)).Flex().ItemsCenter().Pr(ui.DefPx(GutterCodeGap)).
+				H(ui.Px(lineH)).FlexShrink(0).Flex().ItemsCenter().Pr(ui.DefPx(GutterCodeGap)).
 				Child(elements.NewText(num).WithRuns([]text.TextRun{
 					{Len: len(num), Font: mono(false), Color: numColor},
 				}))
@@ -563,44 +519,29 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 		if ev.Button != platform.ButtonLeft {
 			return
 		}
-		var top, left float32
+		var left float32
 		if hb, ok := w.ListenerHitbox(); ok {
-			top = hb.Bounds.Origin.Y.AsF32()
 			left = hb.Bounds.Origin.X.AsF32()
 		}
-		line := first + int((ev.Position.Y.AsF32()-top+frac*lineH)/lineH)
 		if cfg.OnBreakpoint != nil && ev.Position.X.AsF32()-left < GutterLeftInset {
-			if line >= 0 && line < total {
+			if line, ok := lineForY(w, ev.Position.Y, false); ok {
 				cfg.OnBreakpoint(line + 1)
 			}
 			w.StopPropagation()
 			w.Refresh()
 			return
 		}
-		if line < 0 {
-			line = 0
+		if line, ok := lineForY(w, ev.Position.Y, true); ok {
+			edit(func(b *Buffer) { b.SetCursor(b.LineStart(line)) })
 		}
-		if line > total-1 {
-			line = total - 1
-		}
-		edit(func(b *Buffer) { b.SetCursor(b.LineStart(line)) })
 		w.StopPropagation()
 		w.Refresh()
 	})
 	if cfg.OnContext != nil {
 		gutter.OnRightDown(func(ev platform.MouseDownEvent, w *gpui.Window) {
-			var top float32
-			if hb, ok := w.ListenerHitbox(); ok {
-				top = hb.Bounds.Origin.Y.AsF32()
+			if line, ok := lineForY(w, ev.Position.Y, true); ok {
+				edit(func(b *Buffer) { b.SetCursor(b.LineStart(line)) })
 			}
-			line := first + int((ev.Position.Y.AsF32()-top+frac*lineH)/lineH)
-			if line < 0 {
-				line = 0
-			}
-			if line > total-1 {
-				line = total - 1
-			}
-			edit(func(b *Buffer) { b.SetCursor(b.LineStart(line)) })
 			cfg.OnContext(ev.Position)
 			w.StopPropagation()
 			w.Refresh()
@@ -638,7 +579,7 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 		cursorLine := cursorLine == i
 
 		row := elements.NewDiv().
-			H(ui.Px(lineH)).Flex().ItemsCenter().Relative().
+			H(ui.Px(lineH)).FlexShrink(0).Flex().ItemsCenter().Relative().
 			WhitespaceNowrap()
 		if cursorLine {
 			row = row.BgColor(t.Accent.Alpha(0.10))
@@ -647,38 +588,40 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 			row = row.BgColor(t.Yellow.Alpha(0.18))
 		}
 
-		// Tabs render as spaces (DisplayLine) so indentation lines up
-		// exactly like other editors; selection and match ranges map
-		// through displayByteCol.
-		disp := DisplayLine(lineText)
-		runs := HighlightCached(disp, lang, paletteOf(t))
-		if len(runs) == 0 && disp == "" {
+		// Shaping and styling take byte indices in the tab-expanded text.
+		l := newCodeLine(lineText)
+		runs := HighlightCached(l.display, lang, palette)
+		if len(runs) == 0 && l.display == "" {
 			runs = []text.TextRun{{Len: 0, Font: mono(false), Color: t.Text}}
 		}
 		var spans []Span
 		if cfg.Find != nil {
 			for _, mt := range cfg.Find.MatchesOnLine(lineStart, lineStart+len(lineText)) {
-				s0 := displayByteCol(lineText, mt[0]-lineStart)
-				s1 := displayByteCol(lineText, mt[1]-lineStart)
+				s0 := l.displayByte(mt[0] - lineStart)
+				s1 := l.displayByte(mt[1] - lineStart)
 				if s1 > s0 {
 					spans = append(spans, Span{Start: s0, End: s1})
 				}
 			}
 		}
 		if selEnd > selStart {
-			s0 := displayByteCol(lineText, selStart-lineStart)
-			s1 := displayByteCol(lineText, selEnd-lineStart)
+			s0 := l.displayByte(selStart - lineStart)
+			s1 := l.displayByte(selEnd - lineStart)
 			if s1 > s0 {
 				spans = append(spans, Span{Start: s0, End: s1, Sel: true})
 			}
 		}
 		runs = OverlaySpans(runs, spans, t.SelectionBackground(), t.MatchBackground())
-		textEl := elements.NewText(disp).WithRuns(runs)
+		textEl := elements.NewText(l.display).WithRuns(runs)
+		l.element = textEl
 
-		if scrollX > 0 {
-			// Pan: the text shifts left inside the clipped column.
+		textLeft := -scrollX
+		if text.IsRTL(l.display) {
+			textLeft += visualOriginShift(cfg.Shaper.shape(l, lang, palette)).AsF32()
+		}
+		if textLeft != 0 {
 			row = row.Child(elements.NewDiv().
-				Absolute().Left(ui.Px(-scrollX)).Child(textEl))
+				Absolute().Left(ui.Px(textLeft)).Child(textEl))
 		} else {
 			row = row.Child(textEl)
 		}
@@ -689,15 +632,10 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 		// any other editor: the workspace toggles CaretVisible on a
 		// timer and forces it on around cursor activity.
 		if cursorLine && cfg.CaretVisible {
-			runeCol := utf8.RuneCountInString(lineText[:cursorCol(buf, lineStart)])
-			col := displayRuneCol(lineText, runeCol)
-			caret := elements.NewDiv().
-				Absolute().
-				Left(ui.Px(float32(col)*m.CharAdvance - scrollX)).
-				Top(ui.Px(2)).W(ui.Px(2)).H(ui.Px(lineH - 4)).
-				BgColor(t.Accent)
-			row = row.Child(caret)
+			row = row.Child(l.caretOverlay(cursorCol(buf, lineStart), lineH, t.Accent))
 		}
+		l.row = row
+		lines[i-first] = l
 		if codeRows != nil {
 			codeRows = codeRows.Child(row)
 		} else {

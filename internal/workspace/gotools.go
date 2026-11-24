@@ -32,6 +32,7 @@ func (ws *Workspace) toggleGoOutput() {
 
 const (
 	goRun       goAction = "run"
+	goStop      goAction = "stop"
 	goBuild     goAction = "build"
 	goTest      goAction = "test"
 	goVet       goAction = "vet"
@@ -62,8 +63,10 @@ func (ws *Workspace) goTarget(action goAction) (string, error) {
 	return "", fmt.Errorf("open a Go project or a Go file first")
 }
 
+func (ws *Workspace) goTaskRunning() bool { return ws.GoTask != nil && ws.GoTask.Running() }
+
 func (ws *Workspace) goPreflight() error {
-	if ws.GoTask != nil && ws.GoTask.Snapshot().Running {
+	if ws.goTaskRunning() {
 		return fmt.Errorf("a Go task is already running; stop it first")
 	}
 	for _, b := range ws.Buffers {
@@ -105,6 +108,13 @@ func goTaskSpec(action goAction, dir string) (gotools.Spec, error) {
 // callback is run from an event handler, never during a render/entity lease.
 func (ws *Workspace) startGoAction(action goAction, update updateFn, w *gpui.Window) {
 	update(func(s *Workspace) {
+		if action == goStop {
+			if s.goTaskRunning() {
+				s.GoTask.Stop()
+				s.StatusError = ""
+			}
+			return
+		}
 		if action == goDebug || action == goDebugTest {
 			s.startDebug(action, update, w)
 			w.Focus(s.FocusEditor)
@@ -112,7 +122,7 @@ func (ws *Workspace) startGoAction(action goAction, update updateFn, w *gpui.Win
 		}
 		if err := s.goPreflight(); err != nil {
 			s.StatusError = err.Error()
-			if s.GoTask != nil && s.GoTask.Snapshot().Running {
+			if s.goTaskRunning() {
 				s.ShowGoOutput = true
 				s.ShowTerminal = false
 				s.ShowProblems = false
@@ -231,7 +241,7 @@ func renderGoOutput(ws *Workspace, t ui.Theme, update updateFn, w *gpui.Window) 
 	header := elements.NewDiv().Flex().ItemsCenter().H(ui.Px(32)).FlexShrink(0).Px(ui.DefPx(12)).Gap(ui.DefPx(8)).BgColor(t.Surface).BorderB_1().BorderColor(t.Surface1).
 		Child(elements.NewText(snap.Spec.Label).WithTextColor(t.Text)).Child(elements.NewText("· " + snap.Status).WithTextColor(t.Dim)).Child(elements.NewDiv().FlexGrow(1))
 	if snap.Running {
-		header = header.Child(elements.NewDiv().ID(elements.ButtonID("go-task-stop")).CursorPointer().Px(ui.DefPx(8)).Rounded(ui.AbsPx(4)).Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface2) }).OnClick(func(_ gpui.ClickEvent, w *gpui.Window) { ws.GoTask.Stop(); w.Refresh() }).Child(elements.NewText("Stop").WithTextColor(t.Red)))
+		header = header.Child(elements.NewDiv().ID(elements.ButtonID("go-task-stop")).CursorPointer().Px(ui.DefPx(8)).Rounded(ui.AbsPx(4)).Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface2) }).OnClick(func(_ gpui.ClickEvent, w *gpui.Window) { ws.startGoAction(goStop, update, w) }).Child(elements.NewText("Stop").WithTextColor(t.Red)))
 	}
 	header = header.Child(elements.NewDiv().ID(elements.ButtonID("go-output-close")).Tooltip("Hide Go output").CursorPointer().Px(ui.DefPx(8)).Rounded(ui.AbsPx(4)).Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface2) }).OnClick(func(_ gpui.ClickEvent, w *gpui.Window) {
 		update(func(s *Workspace) { s.ShowGoOutput = false })

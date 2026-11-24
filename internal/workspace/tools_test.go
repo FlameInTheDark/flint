@@ -22,12 +22,13 @@ import (
 )
 
 type toolHarness struct {
-	read     func() *Workspace
-	hitboxes func() []gpui.Hitbox
-	scene    func() *render.Scene
-	click    func(string)
-	typeText func(string)
-	key      func(string)
+	read      func() *Workspace
+	hitboxes  func() []gpui.Hitbox
+	scene     func() *render.Scene
+	click     func(string)
+	typeText  func(string)
+	key       func(string)
+	keystroke func(keymap.Keystroke)
 }
 
 func openToolHarness(t *testing.T, root, file string) toolHarness {
@@ -85,6 +86,10 @@ func openToolHarness(t *testing.T, root, file string) toolHarness {
 			hw.DispatchInput(platform.KeyDownEvent{Keystroke: keymap.Keystroke{Key: k}})
 			handle.Window.Draw()
 		},
+		keystroke: func(k keymap.Keystroke) {
+			hw.DispatchInput(platform.KeyDownEvent{Keystroke: k})
+			handle.Window.Draw()
+		},
 	}
 }
 
@@ -92,6 +97,77 @@ func writeToolFile(t *testing.T, path, text string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(text), 0644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRunControlReplacesRunUntilStopped(t *testing.T) {
+	root := t.TempDir()
+	writeToolFile(t, filepath.Join(root, "go.mod"), "module example.test/stop\n\ngo 1.23\n")
+	file := filepath.Join(root, "main.go")
+	writeToolFile(t, file, "package main\nimport (\"fmt\"; \"os\")\nfunc main() { fmt.Println(\"ready\"); os.Stdin.Read(make([]byte, 1)) }\n")
+	h := openToolHarness(t, root, file)
+	queue := make(chan func(), 32)
+	h.read().SetEnv(nil, func(f func()) { queue <- f }, nil)
+	hasButton := func(id string) bool {
+		for _, hit := range h.hitboxes() {
+			if hit.Key == "n:btn-"+id {
+				return true
+			}
+		}
+		return false
+	}
+	wait := func(ready func() bool) {
+		t.Helper()
+		deadline := time.NewTimer(30 * time.Second)
+		defer deadline.Stop()
+		for !ready() {
+			select {
+			case f := <-queue:
+				f() // UI-thread task notifications should redraw without input
+			case <-deadline.C:
+				t.Fatalf("waiting for task UI: %+v", h.read().GoTask.Snapshot())
+			}
+		}
+	}
+	for _, stop := range []string{"toolbar", "shortcut", "natural exit"} {
+		h.click("toolbar-run")
+		task := h.read().GoTask
+		if task == nil {
+			t.Fatalf("could not start Run: %s", h.read().StatusError)
+		}
+		t.Cleanup(task.Stop)
+		if hasButton("toolbar-run") || !hasButton("toolbar-stop") {
+			t.Fatal("primary toolbar control did not switch to Stop")
+		}
+		wait(func() bool { return strings.Contains(task.Snapshot().Output, "\nready\n") })
+		h.click("menubar-Run")
+		if popup := h.read().Popup; popup == nil || len(popup.Items) == 0 || popup.Items[0].Label != "Stop Go Task" {
+			t.Fatalf("Run menu did not switch to Stop: %+v", popup)
+		}
+		h.click("menubar-Run")
+		h.click("tool-output") // Stop must still work with the Run panel hidden.
+		want := "Stopped"
+		switch stop {
+		case "toolbar":
+			h.click("toolbar-stop")
+		case "shortcut":
+			h.keystroke(keymap.Keystroke{Key: "f2", Modifiers: keymap.Modifiers{Control: true}})
+		case "natural exit":
+			want = "Finished"
+			h.click("menubar-Run")
+			if err := task.SendInput("quit"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		wait(func() bool { return hasButton("toolbar-run") && !hasButton("toolbar-stop") })
+		if snap := task.Snapshot(); snap.Running || snap.Status != want {
+			t.Fatalf("%s: want %s, got %+v", stop, want, snap)
+		}
+		if stop == "natural exit" {
+			if popup := h.read().Popup; popup == nil || len(popup.Items) == 0 || popup.Items[0].Label != "Run Go Package" {
+				t.Fatalf("open Run menu did not refresh after exit: %+v", popup)
+			}
+		}
 	}
 }
 
@@ -264,6 +340,22 @@ func TestGitToolStagesDiffsAndCommits(t *testing.T) {
 	writeToolFile(t, filepath.Join(root, "other.go"), "package main\n")
 	h := openToolHarness(t, root, file)
 	h.click("tool-git")
+	var messageBottom, commitTop geometry.Pixels
+	for _, hit := range h.hitboxes() {
+		switch hit.Key {
+		case "n:btn-git-commit-message":
+			messageBottom = hit.Bounds.Bottom()
+		case "n:btn-git-commit":
+			commitTop = hit.Bounds.Origin.Y
+		}
+	}
+	if messageBottom == 0 || commitTop < messageBottom {
+		t.Fatalf("Commit button was not visible below the message box: bottom=%v commit=%v", messageBottom, commitTop)
+	}
+	h.click("git-commit")
+	if got := gitLocal("log", "-1", "--format=%s"); got != "Initial" {
+		t.Fatalf("disabled commit changed HEAD: %q", got)
+	}
 	id := func(stage bool) string {
 		t.Helper()
 		r := h.read().tools.git.result
@@ -294,11 +386,17 @@ func TestGitToolStagesDiffsAndCommits(t *testing.T) {
 	assertDiffPainted(t, h)
 	h.click("git-unstage-" + id(true))
 	h.click("git-stage-" + id(false))
-	h.click("git-commit")
+	h.click("git-commit-message")
 	h.typeText("Commit from editor")
 	h.key("enter")
+	h.key("enter")
+	h.typeText("A second paragraph.")
+	h.click("git-commit")
 	if latest := gitLocal("log", "-1", "--format=%s"); latest != "Commit from editor" {
 		t.Fatalf("latest commit = %q (%s)", latest, h.read().tools.gitMessage)
+	}
+	if got := gitLocal("log", "-1", "--format=%B"); got != "Commit from editor\n\nA second paragraph." {
+		t.Fatalf("multiline commit message = %q", got)
 	}
 	if files := gitLocal("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"); files != label {
 		t.Fatalf("committed files = %q", files)
@@ -314,6 +412,15 @@ func TestGitToolStagesDiffsAndCommits(t *testing.T) {
 	if upstream := gitLocal("rev-parse", "--abbrev-ref", "@{upstream}"); upstream != "origin/editor-test" {
 		t.Fatalf("first push did not set the upstream: %q", upstream)
 	}
+	h.click("git-history")
+	if commits := h.read().tools.git.result.history; len(commits) < 2 || commits[0].subject != "Commit from editor" {
+		t.Fatalf("History did not show recent commits: %+v", commits)
+	}
+	h.click("git-changes")
+	h.click("git-fetch")
+	if msg := h.read().tools.gitMessage; msg != "Fetch complete" {
+		t.Fatalf("fetch status: %q", msg)
+	}
 
 	// Combined action commits only the index and uses the configured
 	// upstream even when its branch name differs from the local name.
@@ -322,9 +429,9 @@ func TestGitToolStagesDiffsAndCommits(t *testing.T) {
 	writeToolFile(t, file, "package main\n// reviewed\n")
 	h.click("git-refresh")
 	h.click("git-stage-" + id(false))
-	h.click("git-commit-push")
+	h.click("git-commit-message")
 	h.typeText("Commit and push from editor")
-	h.key("enter")
+	h.click("git-commit-push")
 	if msg := h.read().tools.gitMessage; msg != "Commit created and branch pushed" {
 		t.Fatalf("commit and push status: %q", msg)
 	}
@@ -341,9 +448,9 @@ func TestGitToolStagesDiffsAndCommits(t *testing.T) {
 	writeToolFile(t, file, "package main\n// local only\n")
 	h.click("git-refresh")
 	h.click("git-stage-" + id(false))
-	h.click("git-commit-push")
+	h.click("git-commit-message")
 	h.typeText("Keep the local commit")
-	h.key("enter")
+	h.click("git-commit-push")
 	if msg := h.read().tools.gitMessage; !strings.Contains(msg, "commit created, but push failed") {
 		t.Fatalf("did not report partial success: %q", msg)
 	}
@@ -365,6 +472,10 @@ func TestGitToolStagesDiffsAndCommits(t *testing.T) {
 	h.key("home")
 	if d.top != 0 {
 		t.Fatalf("Home did not return to the start: top = %.1f", d.top)
+	}
+	h.click("git-stage-all")
+	if got := gitLocal("diff", "--cached", "--name-only"); !strings.Contains(got, label) || !strings.Contains(got, "other.go") {
+		t.Fatalf("Stage All missed changes: %q", got)
 	}
 }
 

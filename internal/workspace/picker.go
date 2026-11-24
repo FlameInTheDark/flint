@@ -161,20 +161,21 @@ func RenderPicker(p *PickerState, t ui.Theme, cb PickerCallbacks, winW, winH flo
 			cb.RestoreFocus(w)
 			w.Refresh()
 		default:
-			if k.KeyChar != "" || k.Key == "backspace" || k.Key == "left" ||
-				k.Key == "right" || k.Key == "home" || k.Key == "end" {
-				cb.Update(func(s *PickerState) {
-					if s.Filter.Key(ev) {
-						s.Sel = -1
-					}
-				})
-				w.Refresh()
-			}
+			cb.Update(func(s *PickerState) {
+				before := s.Filter.String()
+				if s.Filter.Key(ev, w) {
+					w.StopPropagation()
+				}
+				if before != s.Filter.String() {
+					s.Sel = -1
+				}
+			})
+			w.Refresh()
 		}
 	}
 
 	body := func() gpui.Element {
-		// Path + filter display.
+		// Path + filter.
 		head := elements.NewDiv().Flex().ItemsCenter().Gap(ui.DefPx(8)).Px(ui.DefPx(12)).Pt(ui.DefPx(10)).
 			Child(ui.MonoText(p.Dir, t.Dim)).
 			Child(elements.NewDiv().FlexGrow(1)).
@@ -183,7 +184,7 @@ func RenderPicker(p *PickerState, t ui.Theme, cb PickerCallbacks, winW, winH flo
 					State:       &p.Filter,
 					Theme:       t,
 					Placeholder: "Filter…",
-					Focus:       gpui.FocusHandle{}, // display-only
+					Update:      func(f func(*ui.InputState)) { cb.Update(func(s *PickerState) { f(&s.Filter) }) },
 				})))
 
 		list := elements.NewDiv().Flex().FlexCol().FlexGrow(1).Px(ui.DefPx(8)).OverflowYScroll()

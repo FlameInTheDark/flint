@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/FlameInTheDark/go-gpui/elements"
 	"github.com/FlameInTheDark/go-gpui/geometry"
@@ -142,6 +141,7 @@ type Workspace struct {
 	// Text metrics (measured once at startup).
 	CharAdvance float32
 	LineHeight  float32
+	codeShaper  editor.CodeShaper
 
 	// tabReveal is the Active index the tab strip last revealed: Render
 	// edge-detects changes and pans the scrollable strip to the new tab.
@@ -650,21 +650,12 @@ func (ws *Workspace) maxScrollX() float32 {
 	if b == nil {
 		return 0
 	}
-	content := float32(b.MaxLineCols())*ws.CharAdvance + 16
-	code := ws.paneWidth() - editor.RailWidth - 1
-	if ws.ShowLineNumbers {
-		code -= editor.GutterWidth(b.LineCount(), ws.CharAdvance)
-	} else {
-		code -= editor.GutterLeftInset
-	}
-	if code < 40 {
-		code = 40
-	}
-	m := content - code
-	if m < 0 {
-		return 0
-	}
-	return m
+	_, width := ws.codeShaper.CaretMetrics(b, ws.Theme())
+	return max(0, editor.CodeContentWidth(b, ws.CharAdvance, width)-ws.codeViewportWidth(b))
+}
+
+func (ws *Workspace) codeViewportWidth(b *editor.Buffer) float32 {
+	return editor.CodeViewportWidth(ws.paneWidth(), b.LineCount(), ws.CharAdvance, ws.ShowLineNumbers, ws.Cfg.Editor.ShowMinimap)
 }
 
 // scrollCaretIntoViewX pans horizontally so the caret stays visible when
@@ -678,26 +669,17 @@ func (ws *Workspace) scrollCaretIntoViewX() {
 	for len(ws.scrollXs) < len(ws.Buffers) {
 		ws.scrollXs = append(ws.scrollXs, 0)
 	}
-	line, col := b.OffsetToLC(b.Cursor)
-	runeCol := utf8.RuneCountInString(b.Line(line)[:col])
-	caretX := float32(editor.DisplayRuneCol(b.Line(line), runeCol))*ws.CharAdvance + 8
-	code := ws.paneWidth() - editor.RailWidth - 1
-	if ws.ShowLineNumbers {
-		code -= editor.GutterWidth(b.LineCount(), ws.CharAdvance)
-	} else {
-		code -= editor.GutterLeftInset
-	}
-	if code < 40 {
-		code = 40
-	}
+	caretX, width := ws.codeShaper.CaretMetrics(b, ws.Theme())
+	code := ws.codeViewportWidth(b)
 	scroll := ws.scrollX()
-	if caretX-8 < scroll {
-		scroll = caretX - 8
+	if caretX < scroll {
+		scroll = caretX
 	}
 	if caretX > scroll+code-8 {
 		scroll = caretX - code + 8
 	}
-	ws.scrollXs[ws.Active] = scroll
+	limit := max(0, editor.CodeContentWidth(b, ws.CharAdvance, width)-code)
+	ws.scrollXs[ws.Active] = clampF(scroll, 0, limit)
 }
 
 // addScrollX applies a horizontal pixel delta, clamped to the content.

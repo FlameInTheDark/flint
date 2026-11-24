@@ -142,20 +142,22 @@ func RenderCommandPalette(p *CommandPaletteState, t ui.Theme, focus gpui.FocusHa
 		case "escape":
 			close(w)
 		default:
-			if ev.Keystroke.KeyChar != "" || ev.Keystroke.Key == "backspace" || ev.Keystroke.Key == "delete" ||
-				ev.Keystroke.Key == "left" || ev.Keystroke.Key == "right" || ev.Keystroke.Key == "home" || ev.Keystroke.Key == "end" {
-				update(func(s *CommandPaletteState) {
-					if s.Filter.Key(ev) {
-						s.Sel = 0
-					}
-				})
-			}
+			update(func(s *CommandPaletteState) {
+				before := s.Filter.String()
+				if s.Filter.Key(ev, w) {
+					w.StopPropagation()
+				}
+				if before != s.Filter.String() {
+					s.Sel = 0
+				}
+			})
 		}
 		w.Refresh()
 	}
 
 	body := func() gpui.Element {
-		input := ui.RenderInput(ui.InputConfig{State: &p.Filter, Theme: t, Placeholder: "Type a command…"})
+		input := ui.RenderInput(ui.InputConfig{State: &p.Filter, Theme: t, Placeholder: "Type a command…",
+			Update: func(f func(*ui.InputState)) { update(func(s *CommandPaletteState) { f(&s.Filter) }) }})
 		search := elements.NewDiv().Flex().ItemsCenter().H(ui.Px(50)).FlexShrink(0).
 			Px(ui.DefPx(12)).Gap(ui.DefPx(10)).BorderB_1().BorderColor(t.Surface1).
 			Child(elements.NewDiv().W(ui.Px(14)).TextSize(ui.AbsPx(18)).Child(elements.NewText(">").WithTextColor(t.Accent))).

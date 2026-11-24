@@ -30,14 +30,15 @@ func completionKind(k int) string {
 func renderCompletions(ws *Workspace, t ui.Theme, update updateFn, winW, winH float32) gpui.Element {
 	c := ws.completion
 	b := c.buffer
-	line, col := b.OffsetToLC(b.Cursor)
+	line, _ := b.OffsetToLC(b.Cursor)
 	x := ws.paneLeft()
 	if ws.ShowLineNumbers {
 		x += editor.GutterWidth(b.LineCount(), ws.CharAdvance)
 	} else {
 		x += editor.GutterLeftInset
 	}
-	x += float32(editor.DisplayRuneCol(b.Line(line), len([]rune(b.Line(line)[:col]))))*ws.CharAdvance - ws.scrollX()
+	caretX, _ := ws.codeShaper.CaretMetrics(b, t)
+	x += caretX - min(ws.scrollX(), ws.maxScrollX())
 	y := ws.chromeTop() + ui.TabBarHeight + (float32(line)-ws.scrollF()+1)*ws.LineHeight
 	if ws.Find != nil {
 		y += ui.FindBarHeight

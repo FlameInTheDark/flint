@@ -30,6 +30,10 @@ type toolPanels struct {
 	gitRefreshQueued       bool
 	gitMessage             string
 	gitMessageError        bool
+	gitHistory             bool
+	gitCollapsed           [3]bool
+	gitDraft               ui.InputState
+	gitFocus               gpui.FocusHandle
 	outlineBuffer          *editor.Buffer
 	outlineRevision        uint64
 	outline                []toolEntry
@@ -45,6 +49,7 @@ func (p *toolPanels) resetProject() {
 	p.git, p.todos, p.left = nil, nil, ""
 	p.gitMessage, p.gitRefresh = "", false
 	p.gitMessageError = false
+	p.gitHistory, p.gitCollapsed, p.gitDraft = false, [3]bool{}, ui.InputState{}
 	if p.gitOp != nil {
 		p.gitOp.cancel()
 		p.gitOp = nil
@@ -100,7 +105,8 @@ func (ws *Workspace) startToolLoad(kind string, update updateFn, w *gpui.Window)
 		if old := ws.tools.git; dir == "" && old != nil {
 			dir = old.result.repo
 		}
-		work = func(ctx context.Context) toolResult { return gitStatus(ctx, dir) }
+		history := ws.tools.gitHistory
+		work = func(ctx context.Context) toolResult { return gitStatus(ctx, dir, history) }
 	} else {
 		dest = &ws.tools.todos
 		root := ws.Root

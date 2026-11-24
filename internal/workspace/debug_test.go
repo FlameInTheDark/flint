@@ -97,6 +97,16 @@ func TestDebugEditorWorkflow(t *testing.T) {
 		t.Fatal("breakpoint list unavailable before launch")
 	}
 	clickButton("debug-hide")
+	runBox, debugBox := box("toolbar-run"), box("toolbar-run-debug")
+	if debugBox.Origin.X != runBox.Right() {
+		t.Fatal("Debug is not next to Run")
+	}
+	update(func(ws *Workspace) { ws.Buf().Dirty = true })
+	clickButton("toolbar-run-debug")
+	if !strings.Contains(read().StatusError, "save modified Go files") {
+		t.Fatalf("toolbar Debug did not run the debugger preflight: %q", read().StatusError)
+	}
+	update(func(ws *Workspace) { ws.Buf().Dirty = false })
 
 	t.Run("Delve navigation", func(t *testing.T) {
 		if dlv := os.Getenv("GO_GPUI_TEST_DLV"); dlv != "" {
@@ -107,12 +117,13 @@ func TestDebugEditorWorkflow(t *testing.T) {
 		}
 		update(func(ws *Workspace) { ws.OpenFile(main) })
 		handle.Window.Draw()
-		press("f5")
+		clickButton("toolbar-run-debug")
 		s := read().debug.session
 		if s == nil || !read().ShowDebug || read().ShowTerminal {
-			t.Fatalf("F5 did not open debugger: %q", read().StatusError)
+			t.Fatalf("toolbar Debug did not open debugger: %q", read().StatusError)
 		}
-		defer func() { s.Stop(); <-s.Done() }()
+		cleanup := func(session *debugger.Session) { session.Stop(); <-session.Done() }
+		defer cleanup(s)
 		wait := func(ok func() bool) {
 			t.Helper()
 			timer := time.NewTimer(30 * time.Second)
@@ -128,6 +139,7 @@ func TestDebugEditorWorkflow(t *testing.T) {
 			handle.Window.Draw()
 		}
 		wait(func() bool { return read().debug.location != 0 && read().debug.tab == "Inspect" })
+		box("toolbar-stop-debug")
 		if ws := read(); !sameFilePath(ws.Buf().Path, helper) {
 			t.Fatalf("did not open stopped source: %s", ws.Buf().Path)
 		} else if _, exec := ws.debugMarkers(ws.Buf(), s.Snapshot()); exec != 4 {
@@ -140,5 +152,16 @@ func TestDebugEditorWorkflow(t *testing.T) {
 		if got := s.Snapshot().Output; !strings.Contains(got, "42") {
 			t.Fatalf("console output = %q", got)
 		}
+		clickButton("toolbar-run-debug")
+		if next := read().debug.session; next == nil || next == s {
+			t.Fatalf("toolbar Debug did not start another session: %q", read().StatusError)
+		} else {
+			s = next
+		}
+		defer cleanup(s)
+		wait(func() bool { return s.Snapshot().State == debugger.Paused })
+		clickButton("toolbar-stop-debug")
+		wait(func() bool { return s.Snapshot().State == debugger.Finished })
+		box("toolbar-run-debug")
 	})
 }

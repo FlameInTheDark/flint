@@ -7,7 +7,6 @@ import (
 	"github.com/FlameInTheDark/go-gpui/elements"
 	"github.com/FlameInTheDark/go-gpui/geometry"
 	"github.com/FlameInTheDark/go-gpui/gpui"
-	"github.com/FlameInTheDark/go-gpui/platform"
 	"github.com/FlameInTheDark/go-gpui/style"
 
 	"github.com/FlameInTheDark/flint/internal/config"
@@ -444,8 +443,11 @@ func textInputRow(ws *Workspace, t ui.Theme, update updateFn, st *ui.InputState,
 		Update: func(f func(*ui.InputState)) {
 			update(func(s *Workspace) {
 				if st == s.shellInput || st == s.argsInput {
+					before := st.String()
 					f(st)
-					onChange(s)
+					if before != st.String() {
+						onChange(s)
+					}
 				}
 			})
 		},
@@ -458,14 +460,8 @@ func textInputRow(ws *Workspace, t ui.Theme, update updateFn, st *ui.InputState,
 			w.Refresh()
 		},
 	})
-	// Click focuses the field (RenderInput itself has no mouse handler).
 	return elements.NewDiv().Flex().FlexGrow(0).JustifyEnd().
 		W(ui.Px(240)).
-		OnMouseDown(func(ev platform.MouseDownEvent, w *gpui.Window) {
-			if ev.Button == platform.ButtonLeft {
-				w.Focus(focus)
-			}
-		}).
 		Child(input)
 }
 

@@ -139,9 +139,14 @@ type MenuBarConfig struct {
 	// OnClose closes the open menu.
 	OnClose func()
 	// Optional workspace controls; omitted when the menu bar is used standalone.
-	OnSearch    func(*gpui.Window)
-	OnSettings  func(*gpui.Window)
-	OnRun       func(*gpui.Window)
+	OnSearch   func(*gpui.Window)
+	OnSettings func(*gpui.Window)
+	OnRun      func(*gpui.Window)
+	// OnStop replaces the primary Run control while a task is active.
+	OnStop  func(*gpui.Window)
+	OnDebug func(*gpui.Window)
+	// OnStopDebug replaces Debug while a debugger session is active.
+	OnStopDebug func(*gpui.Window)
 	OnRunConfig func(*gpui.Window)
 	RunTarget   string
 	OnBuild     func(*gpui.Window)
@@ -232,15 +237,30 @@ func RenderMenuBar(cfg MenuBarConfig) gpui.Element {
 	}
 	tool := func(id, tip string, action func(*gpui.Window)) gpui.Element {
 		color := t.Dim
-		if id == "run" {
+		icon := id
+		switch id {
+		case "run":
 			color = t.Green
+		case "run-debug":
+			color = t.Green
+			icon = "debug"
+		case "stop", "stop-debug":
+			color = t.Red
+			icon = "stop"
 		}
 		return elements.NewDiv().ID(elements.ButtonID("toolbar-" + id)).Flex().ItemsCenter().JustifyCenter().W(Px(32)).CursorPointer().
 			Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface1) }).Tooltip(tip).
-			OnClick(func(_ gpui.ClickEvent, w *gpui.Window) { action(w) }).Child(ToolbarIcon(id, color))
+			OnClick(func(_ gpui.ClickEvent, w *gpui.Window) { action(w) }).Child(ToolbarIcon(icon, color))
 	}
-	if cfg.OnRun != nil {
+	if cfg.OnStop != nil {
+		bar = bar.Child(tool("stop", "Stop Go task (Ctrl+F2)", cfg.OnStop))
+	} else if cfg.OnRun != nil {
 		bar = bar.Child(tool("run", "Run Go package (Shift+F10)", cfg.OnRun))
+	}
+	if cfg.OnStopDebug != nil {
+		bar = bar.Child(tool("stop-debug", "Stop debugging (Shift+F5)", cfg.OnStopDebug))
+	} else if cfg.OnDebug != nil {
+		bar = bar.Child(tool("run-debug", "Debug Go package (F5)", cfg.OnDebug))
 	}
 	if cfg.OnBuild != nil && !cfg.VeryCompact {
 		bar = bar.Child(tool("build", "Build Go project (Ctrl+F9)", cfg.OnBuild))

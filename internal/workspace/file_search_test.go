@@ -130,8 +130,10 @@ func TestProjectSearchTabsNavigateToTextAndStructure(t *testing.T) {
 	h := openToolHarness(t, root, first)
 	h.click("toolbar-search")
 	h.click("search-tab-text")
+	h.typeText("wrong query")
+	h.keystroke(keymap.Keystroke{Key: "a", Modifiers: keymap.Modifiers{Control: true}})
 	h.typeText("[needle]")
-	if s := h.read().FileSearch; s.Mode != searchText || len(s.hits) != 1 || s.hits[0].line != 3 {
+	if s := h.read().FileSearch; s.Mode != searchText || s.Filter.String() != "[needle]" || len(s.hits) != 1 || s.hits[0].line != 3 {
 		t.Fatalf("text tab: %+v", s)
 	}
 	h.key("enter")

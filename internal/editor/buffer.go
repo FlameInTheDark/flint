@@ -826,65 +826,6 @@ func DisplayLine(s string) string {
 	return sb.String()
 }
 
-// displayRuneCol converts a real rune column (over the raw line) to its
-// display column: tabs before the caret advance to the next tab stop.
-func displayRuneCol(line string, runeCol int) int {
-	disp, i := 0, 0
-	for _, r := range line {
-		if i >= runeCol {
-			break
-		}
-		if r == '\t' {
-			disp += tabAdvance(disp)
-		} else {
-			disp++
-		}
-		i++
-	}
-	return disp
-}
-
-// realRuneCol converts a display column back to the real rune column:
-// clicks inside an expanded tab snap to the tab itself.
-func realRuneCol(line string, dispCol int) int {
-	disp, i := 0, 0
-	for _, r := range line {
-		if disp >= dispCol {
-			return i
-		}
-		if r == '\t' {
-			disp += tabAdvance(disp)
-			if disp > dispCol {
-				return i // clicked inside the tab: snap to it
-			}
-		} else {
-			disp++
-		}
-		i++
-	}
-	return i
-}
-
-// displayByteCol converts a line-relative byte offset to a display column
-// (selection and match ranges are byte offsets in the raw line).
-func displayByteCol(line string, byteIdx int) int {
-	if byteIdx > len(line) {
-		byteIdx = len(line)
-	}
-	if byteIdx < 0 {
-		byteIdx = 0
-	}
-	disp := 0
-	for _, r := range line[:byteIdx] {
-		if r == '\t' {
-			disp += tabAdvance(disp)
-		} else {
-			disp++
-		}
-	}
-	return disp
-}
-
 // setLinesFromParts installs lines with precomputed widths (the apply fast
 // path avoids re-measuring unchanged lines).
 func (b *Buffer) setLinesFromParts(lines []string, cols []int, rescanMax bool) {

@@ -95,7 +95,19 @@ func (t *Task) run(ctx context.Context) {
 	}
 	cmd.Stdout = t
 	cmd.Stderr = t
-	err := cmd.Run()
+	err := cmd.Start()
+	if err == nil {
+		t.mu.Lock()
+		if t.status == "Starting" {
+			t.status = "Running"
+		}
+		t.mu.Unlock()
+		select {
+		case t.changes <- struct{}{}:
+		default:
+		}
+		err = cmd.Wait()
+	}
 	t.mu.Lock()
 	t.stdin = nil
 	t.running = false
@@ -146,7 +158,24 @@ func (t *Task) Snapshot() Snapshot {
 	}
 	return Snapshot{Spec: t.spec, Output: output, Status: t.status, Running: t.running}
 }
-func (t *Task) Stop()                 { t.cancel() }
+
+// Running reports whether the process is starting, running, or stopping
+// without copying its accumulated output.
+func (t *Task) Running() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.running
+}
+
+func (t *Task) Stop() {
+	t.mu.Lock()
+	if t.running {
+		t.status = "Stopping"
+	}
+	t.mu.Unlock()
+	t.cancel()
+}
+
 func (t *Task) Done() <-chan struct{} { return t.done }
 
 // SendInput submits one line to a running interactive command. Callers should

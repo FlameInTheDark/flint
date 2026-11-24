@@ -59,6 +59,10 @@ type runGoAction struct{ action.Unit[runGoAction] }
 
 func (runGoAction) Name() string { return "editor::RunGo" }
 
+type stopGoAction struct{ action.Unit[stopGoAction] }
+
+func (stopGoAction) Name() string { return "editor::StopGo" }
+
 type buildGoAction struct{ action.Unit[buildGoAction] }
 
 func (buildGoAction) Name() string { return "editor::BuildGo" }
@@ -87,6 +91,7 @@ func init() {
 	gpui.RegisterActionName(textSearchAction{}, "editor::TextSearch")
 	gpui.RegisterActionName(toggleProjectAction{}, "editor::ToggleProject")
 	gpui.RegisterActionName(runGoAction{}, "editor::RunGo")
+	gpui.RegisterActionName(stopGoAction{}, "editor::StopGo")
 	gpui.RegisterActionName(buildGoAction{}, "editor::BuildGo")
 	gpui.RegisterActionName(debugGoAction{}, "editor::DebugGo")
 	gpui.RegisterActionName(debugKeyAction{}, "editor::DebugControl")
@@ -117,6 +122,7 @@ func zoomKeymap() *keymap.Keymap {
 		{"ctrl-shift-f", textSearchAction{}},
 		{"ctrl-b", toggleProjectAction{}},
 		{"shift-f10", runGoAction{}},
+		{"ctrl-f2", stopGoAction{}},
 		{"ctrl-f9", buildGoAction{}},
 		{"shift-f9", debugGoAction{}},
 		{"f9", debugKeyAction{"breakpoint"}},
@@ -204,6 +210,11 @@ func onProjectAndGoActions(w *gpui.Window, toggle func(), run func(goAction), pr
 	gpui.OnAction(w, func(_ runGoAction, phase gpui.DispatchPhase, _ *gpui.Window) {
 		if phase == gpui.BubblePhase {
 			run(goRun)
+		}
+	})
+	gpui.OnAction(w, func(_ stopGoAction, phase gpui.DispatchPhase, _ *gpui.Window) {
+		if phase == gpui.BubblePhase {
+			run(goStop)
 		}
 	})
 	gpui.OnAction(w, func(_ buildGoAction, phase gpui.DispatchPhase, _ *gpui.Window) {

@@ -24,6 +24,7 @@ var lucideIcons = map[string]string{
 	"refresh-cw":      `<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /><path d="M8 16H3v5" />`,
 	"list-collapse":   `<path d="m3 10 2.5-2.5L3 5" /><path d="m3 19 2.5-2.5L3 14" /><path d="M10 6h11" /><path d="M10 12h11" /><path d="M10 18h11" />`,
 	"play":            `<polygon points="6 3 20 12 6 21 6 3" />`,
+	"square":          `<rect x="3" y="3" width="18" height="18" rx="2" />`,
 	"hammer":          `<path d="m15 12-8.373 8.373a1 1 0 1 1-3-3L12 9" /><path d="m18 15 4-4" /><path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172V7l-2.26-2.26a6 6 0 0 0-4.202-1.756L9 2.96l.92.82A6.18 6.18 0 0 1 12 8.4V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5" />`,
 	"flask-conical":   `<path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2" /><path d="M6.453 15h11.094" /><path d="M8.5 2h7" />`,
 	"shield-check":    `<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /><path d="m9 12 2 2 4-4" />`,
@@ -67,7 +68,7 @@ func FileIcon(c gc.Hsla) gpui.Element { return Icon("file", c, 14) }
 
 var toolbarIconNames = map[string]string{
 	"project": "folder", "search": "search", "terminal": "square-terminal", "settings": "settings",
-	"refresh": "refresh-cw", "collapse": "list-collapse", "run": "play", "build": "hammer",
+	"refresh": "refresh-cw", "collapse": "list-collapse", "run": "play", "stop": "square", "build": "hammer",
 	"test": "flask-conical", "vet": "shield-check", "debug": "bug", "structure": "list-tree",
 	"git": "git-branch", "problems": "triangle-alert", "todo": "list-todo", "output": "file-text", "close": "x",
 }

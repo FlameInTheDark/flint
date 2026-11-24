@@ -437,7 +437,8 @@ func (ws *Workspace) showCaretDocumentation() {
 	} else {
 		x += editor.GutterLeftInset
 	}
-	x += float32(editor.DisplayRuneCol(lineText, utf8.RuneCountInString(lineText[:col])))*ws.CharAdvance - ws.scrollX()
+	caretX, _ := ws.codeShaper.CaretMetrics(b, ws.Theme())
+	x += caretX - min(ws.scrollX(), ws.maxScrollX())
 	y := ws.chromeTop() + ui.TabBarHeight + (float32(line)-ws.scrollF())*ws.LineHeight
 	if ws.Find != nil {
 		y += ui.FindBarHeight

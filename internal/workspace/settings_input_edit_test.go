@@ -66,13 +66,14 @@ func TestSettingsTextInputEditing(t *testing.T) {
 		t.Fatal("clicking the shell field did not move focus into the input")
 	}
 
-	// Typing appends to the seeded value and live-applies into the config
-	// (every keystroke syncs the input state through the workspace update).
+	// Ctrl+A selects the seeded value, and typing replaces it and live-applies
+	// the change to the config without sending the shortcut to the editor.
+	hw.DispatchInput(platform.KeyDownEvent{Keystroke: keymap.Keystroke{Key: "a", Modifiers: keymap.Modifiers{Control: true}}})
 	hw.DispatchInput(platform.KeyDownEvent{Keystroke: keymap.Keystroke{Key: "x", KeyChar: "x"}})
 	draw()
 	ws = handle.View.Read(cx)
-	if got := ws.Cfg.Terminal.Shell; len(got) == 0 || got[len(got)-1] != 'x' {
-		t.Fatalf("typing into the shell field did not apply: cfg shell=%q", got)
+	if got := ws.Cfg.Terminal.Shell; got != "x" {
+		t.Fatalf("replacing the shell field did not apply: cfg shell=%q", got)
 	}
 
 	// The args field is editable too.
@@ -92,7 +93,7 @@ func TestSettingsTextInputEditing(t *testing.T) {
 	if ws.SettingsOpen {
 		t.Fatal("Enter did not close the settings modal")
 	}
-	if got := ws.Cfg.Terminal.Shell; len(got) == 0 || got[len(got)-1] != 'x' {
+	if got := ws.Cfg.Terminal.Shell; got != "x" {
 		t.Fatalf("shell edit lost on close: %q", got)
 	}
 

@@ -324,13 +324,8 @@ func splitRunsWithBg(runs []text.TextRun, rs, re int, isSel, isMatch bool, selBg
 	return out
 }
 
-// Span is exported from editor.go; OverlaySpans paints line-relative
-// display-column ranges with selection/match backgrounds (tab-expanded
-// rendering shifts byte offsets, so callers pass display columns).
-
-// OverlaySpans applies selection and match backgrounds over line-relative
-// display-column spans. Selection wins when spans overlap (it is applied
-// last, like the byte-offset Overlay).
+// OverlaySpans uses byte offsets in the displayed (tab-expanded) text.
+// Selection wins when spans overlap (it is applied last).
 func OverlaySpans(runs []text.TextRun, spans []Span, selBg, matchBg *gc.Hsla) []text.TextRun {
 	if len(spans) == 0 {
 		return runs

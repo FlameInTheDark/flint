@@ -81,7 +81,7 @@ func TestCursorClickNearestBoundary(t *testing.T) {
 		{0.75, 1, "right half of cell 0 -> caret after 'p'"},
 		{1.25, 1, "left half of cell 1 -> caret before 'a'"},
 		{1.75, 2, "right half of cell 1 -> caret after 'a'"},
-		{4.5, 5, "middle boundary -> nearest is after 'a' (col 5)"}, /* boundary at 5 */
+		{4.75, 5, "right half of cell 4 -> caret after 'a'"},
 		{1.0, 1, "exact boundary between 'p' and 'a'"},
 		{2.0, 2, "exact boundary between 'a' and 'c'"},
 		{3.0, 3, "exact boundary inside 'kage'"},

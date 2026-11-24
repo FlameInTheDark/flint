@@ -301,6 +301,7 @@ func (ws *Workspace) measure(w *gpui.Window) {
 // size (settings panel; 0 = the default 16px). Runs at startup and again
 // whenever the settings change a font size.
 func (ws *Workspace) measureMetrics(w *gpui.Window) {
+	ws.codeShaper = editor.NewCodeShaper(w, float32(ws.Cfg.Editor.FontSize))
 	if sys := w.TextSystem(); sys != nil {
 		ts := style.DefaultTextStyle()
 		if ws.Cfg.Editor.FontSize > 0 {
