@@ -12,7 +12,13 @@ func TestLoadLanguageServers(t *testing.T) {
 	if err := os.MkdirAll(serversDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	raw := "language: go\ncommand: C:/Projects/Go/bin/gopls.exe\nargs:\n  - serve\nextensions:\n  - .go\nroot_markers:\n  - go.mod\n"
+	// Resolution only checks that an explicit path names a file; it never
+	// launches the command. Use a fixture instead of an installed gopls.
+	command := filepath.ToSlash(filepath.Join(dir, "gopls-fixture"))
+	if err := os.WriteFile(command, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw := "language: go\ncommand: \"" + command + "\"\nargs:\n  - serve\nextensions:\n  - .go\nroot_markers:\n  - go.mod\n"
 	if err := os.WriteFile(filepath.Join(serversDir, "go.yaml"), []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +26,7 @@ func TestLoadLanguageServers(t *testing.T) {
 	if len(errs) != 0 || len(servers) != 1 {
 		t.Fatalf("servers=%+v errors=%v", servers, errs)
 	}
-	if got, ok := ServerForPath(servers, "main.go"); !ok || got.Command != "C:/Projects/Go/bin/gopls.exe" {
+	if got, ok := ServerForPath(servers, "main.go"); !ok || got.Command != command {
 		t.Fatalf("lookup = %+v, %v", got, ok)
 	}
 	resolved, err := ResolveLanguageServerCommand(servers[0].Command)

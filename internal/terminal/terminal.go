@@ -513,6 +513,14 @@ func (t *Terminal) Output() []string {
 	return out
 }
 
+// WorkingDirectory returns the current directory, which PTY output may
+// update asynchronously.
+func (t *Terminal) WorkingDirectory() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.Cwd
+}
+
 // Snapshot is an immutable view for rendering.
 type Snapshot struct {
 	// Rows is the visible absolute-row window (copies of grid rows).

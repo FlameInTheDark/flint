@@ -548,6 +548,7 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 	// Terminal dock
 	// -----------------------------------------------------------------------
 	var termPanel gpui.Element
+	ws.wireTerminalRedraw(w.Draw)
 	if ws.ShowTerminal && ws.Term != nil {
 		tabs := ws.terminalTabs()
 		tabCallbacks := make([]terminal.Tab, len(tabs))
@@ -598,14 +599,6 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 				w.Refresh()
 			},
 		})
-		// Live output redraws: the pty reader streams through the VT
-		// emulator; OnOutput lands on the main thread (the dispatch
-		// hook) and draws the frame — output appears as it arrives.
-		// TermSync (headless tests) polls snapshots instead.
-		if !ws.TermSync {
-			wRef := w
-			ws.Term.SetOutputHook(func() { dispatchMain(ws, func() { drawAfterCommand(wRef) }) })
-		}
 	}
 
 	// -----------------------------------------------------------------------
@@ -976,20 +969,22 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 
 func uiColorFor(name string, t ui.Theme) gc.Hsla { return treeFileColor(name, t) }
 
-// dispatchMain runs f on the UI thread (terminal async completion).
-func dispatchMain(ws *Workspace, f func()) {
-	if ws.dispatch != nil {
-		ws.dispatch(f)
+// wireTerminalRedraw is called before the pane can start its shell. Both
+// PTY reader and waiter can fire OnOutput from a worker. Only queue a draw
+// via a UI dispatcher; headless callers without one draw snapshots themselves.
+func (ws *Workspace) wireTerminalRedraw(draw func()) {
+	if ws.Term == nil {
 		return
 	}
-	f()
+	dispatch := ws.dispatch
+	if !ws.ShowTerminal || ws.TermSync || dispatch == nil {
+		ws.Term.SetOutputHook(nil)
+		return
+	}
+	// Capture the dispatcher on the UI thread, not the mutable workspace.
+	// An async draw runs outside input dispatch, so Refresh alone won't do.
+	ws.Term.SetOutputHook(func() { dispatch(draw) })
 }
-
-// drawAfterCommand redraws after an async terminal command finishes. It
-// runs from the platform's dispatch queue: on the UI thread, but OUTSIDE
-// input dispatch, so unlike in-handler refreshes it must draw explicitly
-// (nothing else pumps the dirty flag there).
-func drawAfterCommand(w *gpui.Window) { w.Draw() }
 
 // measureTextWidth measures a string's rendered width through the text
 // system (monospace optional).

@@ -37,12 +37,73 @@ func gitCommand(ctx context.Context, git, root string, readOnly bool, args ...st
 
 type gitOperation struct{ cancel context.CancelFunc }
 
+// gitPushArgs selects exactly one local branch and destination. Avoid the
+// user's push.default, push refspecs and follow-tags settings from sending
+// other branches or tags when Flint's Push button is used.
+func gitPushArgs(ctx context.Context, git, root string) ([]string, error) {
+	read := func(args ...string) (string, error) {
+		out, err := gitCommand(ctx, git, root, true, args...).Output()
+		return strings.TrimRight(string(out), "\r\n"), err
+	}
+	branch, err := read("symbolic-ref", "--quiet", "HEAD")
+	if err != nil || !strings.HasPrefix(branch, "refs/heads/") {
+		return nil, fmt.Errorf("check out a branch before pushing")
+	}
+	prefix := "branch." + strings.TrimPrefix(branch, "refs/heads/") + "."
+	remote, _ := read("config", "--get", prefix+"remote")
+	target, _ := read("config", "--get", prefix+"merge")
+	if remote == "." {
+		return nil, fmt.Errorf("the current branch tracks a local branch; set a remote upstream before pushing")
+	}
+	if remote == "" {
+		remotes, err := read("remote")
+		if err != nil {
+			return nil, fmt.Errorf("cannot list Git remotes: %w", err)
+		}
+		names := strings.Fields(remotes)
+		for _, name := range names {
+			if name == "origin" {
+				remote = name
+				break
+			}
+		}
+		if remote == "" && len(names) == 1 {
+			remote = names[0]
+		}
+		if remote == "" {
+			if len(names) == 0 {
+				return nil, fmt.Errorf("no Git remote is configured; add one before pushing")
+			}
+			return nil, fmt.Errorf("multiple Git remotes are configured; set an upstream for this branch before pushing")
+		}
+		target = "" // a merge ref without a remote isn't a configured upstream
+	}
+	args := []string{"push", "--no-follow-tags"}
+	if target == "" {
+		target = branch
+		args = append(args, "--set-upstream")
+	}
+	if !strings.HasPrefix(target, "refs/heads/") {
+		return nil, fmt.Errorf("the configured upstream is not a remote branch")
+	}
+	return append(args, "--", remote, branch+":"+target), nil
+}
+
 func runGitChange(ctx context.Context, root, operation, value string) error {
+	if operation == "commit-push" {
+		if err := runGitChange(ctx, root, "commit", value); err != nil {
+			return err
+		}
+		if err := runGitChange(ctx, root, "push", ""); err != nil {
+			return fmt.Errorf("commit created, but push failed: %w", err)
+		}
+		return nil
+	}
 	git, err := exec.LookPath("git")
 	if err != nil {
 		return err
 	}
-	if operation != "commit" && !filepath.IsLocal(value) {
+	if (operation == "stage" || operation == "unstage") && !filepath.IsLocal(value) {
 		return fmt.Errorf("invalid Git path: %q", value)
 	}
 	var args []string
@@ -62,6 +123,11 @@ func runGitChange(ctx context.Context, root, operation, value string) error {
 			return fmt.Errorf("enter a commit message")
 		}
 		args = []string{"commit", "--message=" + value}
+	case "push":
+		args, err = gitPushArgs(ctx, git, root)
+		if err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("unknown Git action: %s", operation)
 	}
@@ -87,19 +153,29 @@ func (ws *Workspace) startGitChange(root, action, value string, update updateFn,
 	if g := ws.tools.git; g == nil || g.result.repo != root {
 		return fmt.Errorf("refresh Git status first")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	timeout := 30 * time.Second
+	if action == "push" || action == "commit-push" {
+		timeout = 2 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	op := &gitOperation{cancel: cancel}
 	ws.tools.gitOp = op
 	ws.StatusError = ""
+	ws.tools.gitMessage = ""
 	apply := func(s *Workspace, err error) {
 		if s.tools.gitOp != op {
 			return
 		}
 		s.tools.gitOp = nil
+		s.tools.gitMessageError = err != nil
 		if err != nil {
 			s.tools.gitMessage = err.Error()
 		} else if action == "commit" {
 			s.tools.gitMessage = "Commit created"
+		} else if action == "push" {
+			s.tools.gitMessage = "Branch pushed"
+		} else if action == "commit-push" {
+			s.tools.gitMessage = "Commit created and branch pushed"
 		} else {
 			s.tools.gitMessage = ""
 		}
@@ -148,7 +224,7 @@ func renderGitPanel(ws *Workspace, t ui.Theme, update updateFn) *elements.Div {
 	}
 	if msg := ws.tools.gitMessage; msg != "" {
 		col := t.Dim
-		if msg != "Commit created" {
+		if ws.tools.gitMessageError {
 			col = t.Red
 		}
 		summary, _, _ := strings.Cut(msg, "\n")
@@ -189,6 +265,7 @@ func renderGitPanel(ws *Workspace, t ui.Theme, update updateFn) *elements.Div {
 					update(func(s *Workspace) {
 						if err := s.startGitChange(result.repo, action, e.label, update, w); err != nil {
 							s.tools.gitMessage = err.Error()
+							s.tools.gitMessageError = true
 						}
 					})
 				}))
@@ -197,20 +274,38 @@ func renderGitPanel(ws *Workspace, t ui.Theme, update updateFn) *elements.Div {
 		}
 	}
 	panel := elements.NewDiv().Flex().FlexCol().MinH_0().BgColor(t.EditorBg).Child(header).Child(list)
-	if stagedCount > 0 && !busy {
-		panel.Child(elements.NewDiv().Flex().ItemsCenter().H(ui.Px(40)).FlexShrink(0).Px(ui.DefPx(8)).BorderT_1().BorderColor(t.Surface1).
-			Child(ui.Button("git-commit", "Commit Staged…", t, true, func(w *gpui.Window) {
-				update(func(s *Workspace) {
-					s.OpenPrompt("Commit Staged Changes", "", "Commit", func(s *Workspace, msg string) error {
-						if strings.TrimSpace(msg) == "" {
-							return fmt.Errorf("enter a commit message")
-						}
-						return s.startGitChange(result.repo, "commit", msg, update, w)
-					})
+	if result.repo != "" && !busy {
+		prompt := func(action, label string, w *gpui.Window) {
+			update(func(s *Workspace) {
+				s.OpenPrompt(label+" staged changes", "", label, func(s *Workspace, msg string) error {
+					if strings.TrimSpace(msg) == "" {
+						return fmt.Errorf("enter a commit message")
+					}
+					return s.startGitChange(result.repo, action, msg, update, w)
 				})
-				w.Focus(ws.FocusModal)
-				w.Refresh()
-			})))
+			})
+			w.Focus(ws.FocusModal)
+			w.Refresh()
+		}
+		footer := elements.NewDiv().Flex().FlexCol().FlexShrink(0).P(ui.DefPx(6)).Gap(ui.DefPx(4)).BorderT_1().BorderColor(t.Surface1)
+		actions := elements.NewDiv().Flex().ItemsCenter().Gap(ui.DefPx(4))
+		if stagedCount > 0 {
+			actions.Child(ui.Button("git-commit", "Commit…", t, true, func(w *gpui.Window) { prompt("commit", "Commit", w) }))
+		}
+		actions.Child(ui.Button("git-push", "Push", t, false, func(w *gpui.Window) {
+			update(func(s *Workspace) {
+				if err := s.startGitChange(result.repo, "push", "", update, w); err != nil {
+					s.tools.gitMessage, s.tools.gitMessageError = err.Error(), true
+				}
+			})
+			w.Refresh()
+		}))
+		footer.Child(actions)
+		if stagedCount > 0 {
+			footer.Child(elements.NewDiv().Flex().ItemsCenter().Child(ui.Button("git-commit-push", "Commit & Push…", t, false,
+				func(w *gpui.Window) { prompt("commit-push", "Commit & Push", w) })))
+		}
+		panel.Child(footer)
 	}
 	return panel
 }

@@ -1107,7 +1107,7 @@ func (ws *Workspace) terminalTabs() []terminalTab {
 	tabs := make([]terminalTab, len(ws.Terms))
 	counts := map[string]int{}
 	for i, term := range ws.Terms {
-		name := term.Cwd
+		name := term.WorkingDirectory()
 		for j := len(name) - 1; j >= 0; j-- {
 			if name[j] == '/' || name[j] == '\\' {
 				name = name[j+1:]

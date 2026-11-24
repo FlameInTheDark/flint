@@ -16,6 +16,7 @@ import (
 	"github.com/FlameInTheDark/flint/internal/ui"
 	gc "github.com/FlameInTheDark/go-gpui/color"
 	"github.com/FlameInTheDark/go-gpui/elements"
+	"github.com/FlameInTheDark/go-gpui/geometry"
 	"github.com/FlameInTheDark/go-gpui/gpui"
 	"github.com/FlameInTheDark/go-gpui/platform"
 )
@@ -38,6 +39,17 @@ type diffTab struct {
 	entry  toolEntry
 	result diffResult
 	cancel context.CancelFunc
+	top    float32 // first visible row, with fractional wheel input accumulated
+}
+
+func (d *diffTab) setResult(result diffResult) {
+	d.result = result
+	for i, row := range result.rows {
+		if row.changed {
+			d.top = float32(max(0, i-2))
+			break
+		}
+	}
 }
 
 const diffLimit = 512 << 10
@@ -236,14 +248,14 @@ func (ws *Workspace) openGitDiff(root string, e toolEntry, update updateFn, w *g
 				defer func() { _ = recover() }()
 				update(func(s *Workspace) {
 					if s.diffs[buf] == tab {
-						tab.result = result
+						tab.setResult(result)
 					}
 				})
 				w.Refresh()
 			})
 		}()
 	} else {
-		tab.result = loadDiff(ctx, root, e)
+		tab.setResult(loadDiff(ctx, root, e))
 		cancel()
 	}
 }
@@ -264,11 +276,24 @@ func renderGitDiff(ws *Workspace, b *editor.Buffer, t ui.Theme, update updateFn)
 	if d.entry.staged {
 		left, right = "HEAD", "Index"
 	}
+	const headerHeight = 32
+	rowHeight := max(float32(1), ws.LineHeight)
+	// The workspace knows the viewport from its fixed-height chrome. Lay
+	// out only the rows that can appear in it, without nesting a measured
+	// list inside this flex pane (which can lose its measured row height).
+	page := max(1, int((ws.paneHeight()-headerHeight)/rowHeight))
+	maxTop := float32(max(0, len(d.result.rows)-page))
+	d.top = min(max(d.top, 0), maxTop)
+	scroll := func(top float32, w *gpui.Window) {
+		d.top = min(max(top, 0), maxTop)
+		w.StopPropagation()
+		w.Refresh()
+	}
 	leftColor, rightColor := t.Red.Alpha(.16), t.Green.Alpha(.16)
 	cell := func(label string) *elements.Div {
 		return elements.NewDiv().Flex().Flex1().MinW_0().ItemsCenter().Px(ui.DefPx(8)).WhitespaceNowrap().OverflowHidden().Child(elements.NewText(label).WithTextColor(t.Text))
 	}
-	bar := elements.NewDiv().Flex().ItemsCenter().FlexShrink(0).H(ui.Px(32)).BgColor(t.Surface).BorderB_1().BorderColor(t.Surface1).
+	bar := elements.NewDiv().Flex().ItemsCenter().FlexShrink(0).H(ui.Px(headerHeight)).BgColor(t.Surface).BorderB_1().BorderColor(t.Surface1).
 		Child(cell(left + " · " + d.entry.label).BorderR_1().BorderColor(t.Surface1)).Child(cell(right + " · " + d.entry.label))
 	rowSide := func(line diffLine, changed bool, color gc.Hsla) *elements.Div {
 		col := elements.NewDiv().Flex().Flex1().MinW_0().ItemsCenter().WhitespaceNowrap().OverflowHidden().Gap(ui.DefPx(8)).Px(ui.DefPx(7))
@@ -293,17 +318,40 @@ func renderGitDiff(ws *Workspace, b *editor.Buffer, t ui.Theme, update updateFn)
 			if ui.SecondaryMod(ev.Keystroke.Modifiers) && ev.Keystroke.Key == "w" {
 				update(func(s *Workspace) { s.CloseEditor() })
 				w.Refresh()
+				return
+			}
+			switch ev.Keystroke.Key {
+			case "up":
+				scroll(d.top-1, w)
+			case "down":
+				scroll(d.top+1, w)
+			case "pageup":
+				scroll(d.top-float32(page), w)
+			case "pagedown":
+				scroll(d.top+float32(page), w)
+			case "home":
+				scroll(0, w)
+			case "end":
+				scroll(maxTop, w)
 			}
 		})
 	if d.result.note != "" {
 		return pane.Child(elements.NewDiv().P(ui.DefPx(12)).Child(elements.NewText(d.result.note).WithTextColor(t.Dim)))
 	}
-	return pane.Child(elements.NewDiv().ID(elements.ButtonID("git-diff-content-" + d.entry.label)).Flex().FlexCol().Flex1().MinH_0().OverflowHidden().Child(elements.NewUniformList(len(d.result.rows), func(i int, w *gpui.Window) gpui.Element {
-		r := d.result.rows[i]
-		row := elements.NewDiv().Flex().H(ui.Px(ws.LineHeight))
+	content := elements.NewDiv().ID(elements.ButtonID("git-diff-content-" + d.entry.label)).Flex().FlexCol().Flex1().MinH_0().OverflowHidden().
+		OnScroll(func(ev platform.ScrollEvent, w *gpui.Window) {
+			delta := ev.Delta.PixelDelta(geometry.Px(rowHeight)).Y.AsF32()
+			if delta != 0 {
+				scroll(d.top-delta/rowHeight, w)
+			}
+		})
+	first := int(d.top)
+	for _, r := range d.result.rows[first:min(len(d.result.rows), first+page+1)] {
+		row := elements.NewDiv().Flex().FlexShrink(0).H(ui.Px(rowHeight))
 		if size := ws.Cfg.Editor.FontSize; size > 0 {
 			row.TextSize(ui.AbsPx(float32(size)))
 		}
-		return row.Child(rowSide(r.left, r.changed, leftColor).BorderR_1().BorderColor(t.Surface1)).Child(rowSide(r.right, r.changed, rightColor))
-	}).Flex1().MinH_0().W_Full()))
+		content.Child(row.Child(rowSide(r.left, r.changed, leftColor).BorderR_1().BorderColor(t.Surface1)).Child(rowSide(r.right, r.changed, rightColor)))
+	}
+	return pane.Child(content)
 }

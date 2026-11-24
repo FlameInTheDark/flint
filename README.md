@@ -20,11 +20,17 @@ Run `go build .` for a binary, or `go build -ldflags "-H windowsgui" .` on Windo
 | --- | --- |
 | `go install golang.org/x/tools/gopls@latest` | Go completion (**Ctrl+Space**), definitions (**Ctrl+click**), and documentation (**Ctrl+Q**). |
 | `go install github.com/go-delve/delve/cmd/dlv@latest` | Go debugging. Toggle a breakpoint with **F9** and start debugging with **Shift+F9**. |
-| `git` on `PATH` | Staged and unstaged changes, read-only diffs, staging, and commits. |
+| `git` on `PATH` | Staged and unstaged changes, side-by-side diffs, staging, commits, and push. |
 
 **Ctrl+S** saves the active file, **Ctrl+F** finds text in it, and **Ctrl+P** searches the project. Use **Preview** on a Markdown tab to switch to CommonMark/GFM preview. The **Run** menu includes package-test debugging and saved launch configurations.
 
 Flint keeps the former editor's settings and language-server configuration under `~/.go-gpui/editor`, so no settings migration is required. Set `GO_GPUI_CONFIG_DIR` to use another directory.
+
+## Git
+
+Open **Git Version Control** in the tool rail. Click a file to compare saved changes side by side, and use **+** or **−** to stage or unstage it. **Commit…** commits only staged changes. **Push** sends the current branch to its configured upstream; on a first push, Flint uses `origin` or the only configured remote and sets the upstream. **Commit & Push…** does both and keeps the local commit if the push fails.
+
+Flint uses your Git configuration, credential helper, and SSH agent. Set up authentication outside Flint if a push cannot authenticate. A rejected push does not force-update the remote.
 
 ## Development
 

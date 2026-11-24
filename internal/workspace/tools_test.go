@@ -18,11 +18,13 @@ import (
 	"github.com/FlameInTheDark/go-gpui/keymap"
 	"github.com/FlameInTheDark/go-gpui/platform"
 	"github.com/FlameInTheDark/go-gpui/platform/headless"
+	"github.com/FlameInTheDark/go-gpui/render"
 )
 
 type toolHarness struct {
 	read     func() *Workspace
 	hitboxes func() []gpui.Hitbox
+	scene    func() *render.Scene
 	click    func(string)
 	typeText func(string)
 	key      func(string)
@@ -54,6 +56,7 @@ func openToolHarness(t *testing.T, root, file string) toolHarness {
 	return toolHarness{
 		read:     func() *Workspace { return handle.View.Read(a.App) },
 		hitboxes: handle.Window.RenderedHitboxes,
+		scene:    handle.Window.RenderedScene,
 		click: func(id string) {
 			t.Helper()
 			for _, box := range handle.Window.RenderedHitboxes() {
@@ -228,16 +231,20 @@ func TestGitToolStagesDiffsAndCommits(t *testing.T) {
 		t.Skip("Git not installed")
 	}
 	root := t.TempDir()
-	gitLocal := func(args ...string) string {
+	gitAt := func(dir string, args ...string) string {
 		t.Helper()
-		cmd := exec.Command(git, append([]string{"-C", root}, args...)...)
+		cmd := exec.Command(git, append([]string{"-C", dir}, args...)...)
 		b, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, b)
 		}
 		return strings.TrimSpace(string(b))
 	}
-	gitLocal("init", "-q")
+	gitLocal := func(args ...string) string { return gitAt(root, args...) }
+	remote := t.TempDir()
+	gitAt(remote, "init", "--bare", "-q")
+	gitLocal("init", "-q", "-b", "editor-test")
+	gitLocal("remote", "add", "origin", remote)
 	gitLocal("config", "user.name", "Editor Test")
 	gitLocal("config", "user.email", "editor@example.test")
 	gitLocal("config", "commit.gpgsign", "false")
@@ -277,12 +284,14 @@ func TestGitToolStagesDiffsAndCommits(t *testing.T) {
 	if len(diff.rows) != 2 || !diff.rows[1].changed || diff.rows[1].left.text != "// original" || diff.rows[1].right.text != "// edited" {
 		t.Fatalf("working tree diff: %+v", diff)
 	}
+	assertDiffPainted(t, h)
 	h.click("git-stage-" + id(false))
 	h.click("git-diff-" + id(true))
 	ws = h.read()
 	if d := ws.diffs[ws.Buf()]; !d.entry.staged || len(d.result.rows) != 2 || d.result.rows[1].right.text != "// edited" {
 		t.Fatalf("staged diff: %+v", d)
 	}
+	assertDiffPainted(t, h)
 	h.click("git-unstage-" + id(true))
 	h.click("git-stage-" + id(false))
 	h.click("git-commit")
@@ -296,5 +305,82 @@ func TestGitToolStagesDiffsAndCommits(t *testing.T) {
 	}
 	if status := gitLocal("status", "--porcelain"); status != "?? other.go" {
 		t.Fatalf("unstaged file was modified: %q", status)
+	}
+	firstCommit := gitLocal("rev-parse", "HEAD")
+	h.click("git-push")
+	if got := gitAt(remote, "rev-parse", "refs/heads/editor-test"); got != firstCommit {
+		t.Fatalf("remote commit = %q, want %q", got, firstCommit)
+	}
+	if upstream := gitLocal("rev-parse", "--abbrev-ref", "@{upstream}"); upstream != "origin/editor-test" {
+		t.Fatalf("first push did not set the upstream: %q", upstream)
+	}
+
+	// Combined action commits only the index and uses the configured
+	// upstream even when its branch name differs from the local name.
+	gitLocal("config", "branch.editor-test.merge", "refs/heads/review")
+	gitLocal("config", "push.default", "matching")
+	writeToolFile(t, file, "package main\n// reviewed\n")
+	h.click("git-refresh")
+	h.click("git-stage-" + id(false))
+	h.click("git-commit-push")
+	h.typeText("Commit and push from editor")
+	h.key("enter")
+	if msg := h.read().tools.gitMessage; msg != "Commit created and branch pushed" {
+		t.Fatalf("commit and push status: %q", msg)
+	}
+	if got := gitAt(remote, "log", "-1", "--format=%s", "refs/heads/review"); got != "Commit and push from editor" {
+		t.Fatalf("upstream commit message = %q", got)
+	}
+	if got := gitAt(remote, "rev-parse", "refs/heads/editor-test"); got != firstCommit {
+		t.Fatalf("push also updated another branch: %q", got)
+	}
+
+	diverged := gitAt(remote, "-c", "user.name=Other Writer", "-c", "user.email=other@example.test", "-c", "commit.gpgsign=false",
+		"commit-tree", "refs/heads/review^{tree}", "-m", "Independent remote commit")
+	gitAt(remote, "update-ref", "refs/heads/review", diverged)
+	writeToolFile(t, file, "package main\n// local only\n")
+	h.click("git-refresh")
+	h.click("git-stage-" + id(false))
+	h.click("git-commit-push")
+	h.typeText("Keep the local commit")
+	h.key("enter")
+	if msg := h.read().tools.gitMessage; !strings.Contains(msg, "commit created, but push failed") {
+		t.Fatalf("did not report partial success: %q", msg)
+	}
+	if got := gitLocal("log", "-1", "--format=%s"); got != "Keep the local commit" {
+		t.Fatalf("push failure lost the local commit: %q", got)
+	}
+	if got := gitAt(remote, "rev-parse", "refs/heads/review"); got != diverged {
+		t.Fatalf("rejected push overwrote the remote: %q", got)
+	}
+
+	writeToolFile(t, file, "package main\n"+strings.Repeat("// long diff row\n", 250))
+	h.click("git-refresh")
+	h.click("git-diff-" + id(false))
+	d := h.read().diffs[h.read().Buf()]
+	h.key("end")
+	if d.top < 100 {
+		t.Fatalf("End did not scroll the long diff: top = %.1f", d.top)
+	}
+	h.key("home")
+	if d.top != 0 {
+		t.Fatalf("Home did not return to the start: top = %.1f", d.top)
+	}
+}
+
+func assertDiffPainted(t *testing.T, h toolHarness) {
+	t.Helper()
+	theme := h.read().Theme()
+	var old, new bool
+	for _, q := range h.scene().Quads {
+		visible := render.IntersectScaled(q.Bounds, q.ContentMask.Bounds)
+		if visible.Size.Width <= 0 || visible.Size.Height <= 0 {
+			continue
+		}
+		old = old || q.Background.Solid == theme.Red.Alpha(.16)
+		new = new || q.Background.Solid == theme.Green.Alpha(.16)
+	}
+	if !old || !new {
+		t.Fatalf("diff data loaded but changed lines were not painted: old=%v new=%v", old, new)
 	}
 }

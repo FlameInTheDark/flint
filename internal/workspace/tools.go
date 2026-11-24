@@ -29,6 +29,7 @@ type toolPanels struct {
 	gitRefresh             bool
 	gitRefreshQueued       bool
 	gitMessage             string
+	gitMessageError        bool
 	outlineBuffer          *editor.Buffer
 	outlineRevision        uint64
 	outline                []toolEntry
@@ -43,6 +44,7 @@ func (p *toolPanels) resetProject() {
 	}
 	p.git, p.todos, p.left = nil, nil, ""
 	p.gitMessage, p.gitRefresh = "", false
+	p.gitMessageError = false
 	if p.gitOp != nil {
 		p.gitOp.cancel()
 		p.gitOp = nil
