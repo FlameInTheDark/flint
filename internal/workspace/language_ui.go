@@ -14,20 +14,44 @@ import (
 func completionKind(k int) string {
 	switch k {
 	case 2, 3, 4:
-		return "ƒ"
+		return "f"
 	case 5, 22:
-		return "◆"
+		return "F"
 	case 6, 10:
-		return "◇"
+		return "v"
 	case 7, 8, 9:
 		return "T"
 	case 14:
 		return "K"
 	default:
-		return "·"
+		return "-"
 	}
 }
-func renderCompletions(ws *Workspace, t ui.Theme, update updateFn, winW, winH float32) gpui.Element {
+
+// fitCompletionText keeps unbroken LSP labels visible even when the text
+// widget would otherwise wrap the whole word outside its clipped container.
+func fitCompletionText(s string, width float32, measure func(string) float32) string {
+	s = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(s)
+	if measure(s) <= width {
+		return s
+	}
+	if measure("…") > width {
+		return ""
+	}
+	runes := []rune(s)
+	lo, hi := 0, len(runes)
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if measure(string(runes[:mid])+"…") <= width {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	return string(runes[:lo]) + "…"
+}
+
+func renderCompletions(ws *Workspace, t ui.Theme, update updateFn, w *gpui.Window, winW, winH float32) gpui.Element {
 	c := ws.completion
 	b := c.buffer
 	line, _ := b.OffsetToLC(b.Cursor)
@@ -52,10 +76,16 @@ func renderCompletions(ws *Workspace, t ui.Theme, update updateFn, winW, winH fl
 	}
 	y = max(float32(8), min(y, winH-height-8))
 	box := elements.NewDiv().ID(elements.ButtonID("completion-popup")).Absolute().Left(ui.Px(x)).Top(ui.Px(y)).W(ui.Px(width)).
-		Flex().FlexCol().BgColor(t.Surface).Border_1().BorderColor(t.Surface2).Rounded(ui.AbsPx(7)).OverflowHidden()
-	header := elements.NewDiv().H(ui.Px(32)).Flex().ItemsCenter().Px(ui.DefPx(12)).BorderB_1().BorderColor(t.Surface1).
-		Child(elements.NewText("SUGGESTIONS").WithTextColor(t.Accent)).Child(elements.NewDiv().FlexGrow(1)).
-		Child(elements.NewText(fmt.Sprintf("%d results", len(c.items))).WithTextColor(t.Dim))
+		Flex().FlexCol().TextSize(ui.AbsPx(13)).BgColor(t.Surface).Border_1().BorderColor(t.Surface2).Rounded(ui.AbsPx(7)).OverflowHidden().Occlude()
+	resultLabel := "results"
+	if len(c.items) == 1 {
+		resultLabel = "result"
+	}
+	header := elements.NewDiv().H(ui.Px(32)).FlexShrink(0).Flex().ItemsCenter().Gap(ui.DefPx(8)).Px(ui.DefPx(12)).BorderB_1().BorderColor(t.Surface1).
+		Child(elements.NewDiv().Flex1().MinW_0().OverflowHidden().WhitespaceNowrap().TextEllipsis().
+			Child(elements.NewText("Suggestions").WithTextColor(t.Text))).
+		Child(elements.NewDiv().FlexShrink(0).TextSize(ui.AbsPx(11)).
+			Child(elements.NewText(fmt.Sprintf("%d %s", len(c.items), resultLabel)).WithTextColor(t.Dim)))
 	box = box.Child(header)
 	first := max(0, min(c.selected-rows+1, len(c.items)-rows))
 	for i := first; i < first+rows; i++ {
@@ -65,25 +95,37 @@ func renderCompletions(ws *Workspace, t ui.Theme, update updateFn, winW, winH fl
 		if i == c.selected {
 			bg = t.Surface2
 		}
-		row := elements.NewDiv().ID(elements.ButtonID(fmt.Sprintf("completion-%d", i))).H(ui.Px(27)).Flex().ItemsCenter().Gap(ui.DefPx(9)).Px(ui.DefPx(12)).BgColor(bg).CursorPointer().OverflowHidden().
+		// Reserve a bounded detail column and leave the remaining width to the
+		// label. Measure at each column's actual font size (the helper uses 16px).
+		measureLabel := func(s string) float32 { return measureTextWidth(w, s, false) * 13 / 16 }
+		measureDetail := func(s string) float32 { return measureTextWidth(w, s, false) * 12 / 16 }
+		available := max(float32(0), width-2-24-18-9)
+		detailWidth := float32(0)
+		if item.Detail != "" {
+			detailWidth = min(width*0.4, available/2, measureDetail(strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(item.Detail)))
+			available = max(float32(0), available-detailWidth-9)
+		}
+		label := fitCompletionText(item.Label, available, measureLabel)
+		row := elements.NewDiv().ID(elements.ButtonID(fmt.Sprintf("completion-%d", i))).H(ui.Px(27)).FlexShrink(0).Flex().ItemsCenter().Gap(ui.DefPx(9)).Px(ui.DefPx(12)).BgColor(bg).CursorPointer().OverflowHidden().
 			Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface2) }).
 			OnClick(func(_ gpui.ClickEvent, w *gpui.Window) {
 				update(func(s *Workspace) { s.acceptCompletion(idx) })
 				w.Focus(ws.FocusEditor)
 				w.Refresh()
 			}).
-			Child(elements.NewDiv().W(ui.Px(16)).FlexShrink(0).Child(ui.MonoText(completionKind(item.Kind), t.Mauve))).
-			Child(elements.NewText(item.Label).WithTextColor(t.Text)).Child(elements.NewDiv().FlexGrow(1))
+			Child(elements.NewDiv().W(ui.Px(18)).H(ui.Px(18)).FlexShrink(0).
+				Flex().ItemsCenter().JustifyCenter().Rounded(ui.AbsPx(4)).BgColor(t.Mauve.Alpha(0.14)).TextSize(ui.AbsPx(12)).
+				Child(ui.MonoText(completionKind(item.Kind), t.Mauve))).
+			Child(elements.NewDiv().W(ui.Px(available)).FlexShrink(0).OverflowHidden().WhitespaceNowrap().
+				Child(elements.NewText(label).WithTextColor(t.Text)))
 		if item.Detail != "" {
-			detail := strings.ReplaceAll(item.Detail, "\n", " ")
-			if len([]rune(detail)) > 36 {
-				detail = string([]rune(detail)[:36]) + "…"
-			}
-			row = row.Child(elements.NewText(detail).WithTextColor(t.Dim))
+			detail := fitCompletionText(item.Detail, detailWidth, measureDetail)
+			row = row.Child(elements.NewDiv().W(ui.Px(detailWidth)).FlexShrink(0).OverflowHidden().WhitespaceNowrap().TextSize(ui.AbsPx(12)).
+				Child(elements.NewText(detail).WithTextColor(t.Dim)))
 		}
 		box = box.Child(row)
 	}
-	return box.Child(elements.NewDiv().H(ui.Px(25)).Flex().ItemsCenter().Px(ui.DefPx(12)).BorderT_1().BorderColor(t.Surface1).TextSize(ui.AbsPx(11)).Child(elements.NewText("↑ ↓ navigate    Enter / Tab insert    Esc dismiss").WithTextColor(t.Dim)))
+	return box.Child(elements.NewDiv().H(ui.Px(25)).FlexShrink(0).Flex().ItemsCenter().Px(ui.DefPx(12)).BorderT_1().BorderColor(t.Surface1).TextSize(ui.AbsPx(11)).OverflowHidden().WhitespaceNowrap().TextEllipsis().Child(elements.NewText("↑ ↓ navigate    Enter / Tab insert    Esc dismiss").WithTextColor(t.Dim)))
 }
 
 func renderDocumentation(ws *Workspace, t ui.Theme, update updateFn, w *gpui.Window, winW, winH float32) gpui.Element {

@@ -772,7 +772,7 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 	// -----------------------------------------------------------------------
 	onZoomActions(w)
 	if ws.completion != nil && ws.completion.buffer == ws.Buf() {
-		root = root.Child(renderCompletions(ws, t, update, winW, winH))
+		root = root.Child(renderCompletions(ws, t, update, w, winW, winH))
 	}
 	if ws.documentation != nil && ws.documentation.buffer == ws.Buf() {
 		root = root.Child(renderDocumentation(ws, t, update, w, winW, winH))
