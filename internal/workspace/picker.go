@@ -209,7 +209,7 @@ func RenderPicker(p *PickerState, t ui.Theme, cb PickerCallbacks, winW, winH flo
 					if e.IsDir {
 						return ui.FolderIcon(t.Mauve, false)
 					}
-					return ui.FileIcon(treeFileColor(e.Name, t))
+					return ui.FileTypeIcon(e.Name, t)
 				}()).
 				Child(elements.NewDiv().W(ui.Px(8))).
 				Child(elements.NewText(e.Name).WithTextColor(pickerLabelColor(e, t))).

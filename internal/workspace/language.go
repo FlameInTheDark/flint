@@ -433,7 +433,7 @@ func (ws *Workspace) showCaretDocumentation() {
 	x := float32(0)
 	x += ws.paneLeft()
 	if ws.ShowLineNumbers {
-		x += editor.GutterWidth(b.LineCount(), ws.CharAdvance)
+		x += editor.GutterWidth(b.LineCount(), ws.CharAdvance, editor.Foldable(b.LanguageOf()))
 	} else {
 		x += editor.GutterLeftInset
 	}

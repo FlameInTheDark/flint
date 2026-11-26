@@ -9,6 +9,7 @@ package editor
 import (
 	"strings"
 
+	gc "github.com/FlameInTheDark/go-gpui/color"
 	"github.com/FlameInTheDark/go-gpui/text"
 )
 
@@ -18,7 +19,9 @@ type genericLangDef struct {
 	lineComments []string
 	// blockComment delimiters (open, close) for C-style /* ... */.
 	blockComments bool
-	keywords      map[string]bool
+	// tripleQuotes enables Python-style """...""" / '''...''' strings.
+	tripleQuotes bool
+	keywords     map[string]bool
 }
 
 var genericLang = map[string]*genericLangDef{
@@ -29,8 +32,12 @@ var genericLang = map[string]*genericLangDef{
 	"javascript": cLike(jsKeywords, nil),
 	"typescript": cLike(appendCopy(jsKeywords, tsKeywords...), nil),
 	"rust":       cLike(rustKeywords, rustTypeKeywords),
-	"python":     hashComment(pythonKeywords),
-	"ruby":       hashComment(rubyKeywords),
+	"python": {
+		lineComments: []string{"#"},
+		tripleQuotes: true,
+		keywords:     pythonKeywords,
+	},
+	"ruby": hashComment(rubyKeywords),
 	"php": {
 		lineComments:  []string{"//", "#"},
 		blockComments: true,
@@ -55,13 +62,63 @@ func hashComment(keywords map[string]bool) *genericLangDef {
 	return &genericLangDef{lineComments: []string{"#"}, keywords: keywords}
 }
 
-// genericRuns tokenizes one line with the generic tokenizer (block
-// comments spanning lines are approximated per line: a /* start paints
-// the rest of the line, a trailing */ also ends it).
+// genericRuns tokenizes one line with the generic tokenizer (top-of-file
+// context).
 func genericRuns(line string, def *genericLangDef, p Palette) []text.TextRun {
+	runs, _ := genericRunsIn(line, def, StateNormal, p)
+	return runs
+}
+
+// genericRunsIn tokenizes one line with the generic tokenizer, resuming
+// the given cross-line context. Block comments, JS/shell template
+// literals (backticks) and Python triple-quoted strings span lines; " and
+// ' strings end at the newline in these languages. It returns the runs
+// plus the context the next line starts in.
+func genericRunsIn(line string, def *genericLangDef, st LineState, p Palette) ([]text.TextRun, LineState) {
 	var runs []text.TextRun
-	rest := line
-	for len(rest) > 0 {
+	emit := func(n int, color gc.Hsla, bold bool) {
+		if n > 0 {
+			runs = append(runs, text.TextRun{Len: n, Font: mono(bold), Color: color})
+		}
+	}
+	i := 0
+	// Resume a construct carried over from the previous line.
+	if st&StateTripleDouble != 0 || st&StateTripleSingle != 0 {
+		quote := `"""`
+		color := StateTripleDouble
+		if st&StateTripleSingle != 0 {
+			quote = "'''"
+			color = StateTripleSingle
+		}
+		end := strings.Index(line[i:], quote)
+		if end < 0 {
+			emit(len(line), p.String, false)
+			return runs, color
+		}
+		end += i + 3
+		emit(end, p.String, false)
+		i = end
+	} else if st&StateBlockComment != 0 {
+		end := strings.Index(line[i:], "*/")
+		if end < 0 {
+			emit(len(line), p.Comment, false)
+			return runs, StateBlockComment
+		}
+		end += i + 2
+		emit(end, p.Comment, false)
+		i = end
+	} else if st&StateRawString != 0 {
+		end := strings.IndexByte(line[i:], '`')
+		if end < 0 {
+			emit(len(line), p.String, false)
+			return runs, StateRawString
+		}
+		end += i + 1
+		emit(end, p.String, false)
+		i = end
+	}
+	for i < len(line) {
+		rest := line[i:]
 		// Comments.
 		comment := -1
 		for _, c := range def.lineComments {
@@ -71,80 +128,165 @@ func genericRuns(line string, def *genericLangDef, p Palette) []text.TextRun {
 			}
 		}
 		if comment == 0 {
-			runs = append(runs, text.TextRun{Len: len(rest), Font: mono(false), Color: p.Comment})
-			return runs
+			emit(len(rest), p.Comment, false)
+			return runs, StateNormal
 		}
 		if def.blockComments && strings.HasPrefix(rest, "/*") {
 			end := strings.Index(rest[2:], "*/")
 			if end < 0 {
-				runs = append(runs, text.TextRun{Len: len(rest), Font: mono(false), Color: p.Comment})
-				return runs
+				emit(len(rest), p.Comment, false)
+				return runs, StateBlockComment
 			}
 			n := end + 4
-			runs = append(runs, text.TextRun{Len: n, Font: mono(false), Color: p.Comment})
-			rest = rest[n:]
+			emit(n, p.Comment, false)
+			i += n
+			continue
+		}
+		// Python triple-quoted strings (before the plain quote check).
+		if def.tripleQuotes && (strings.HasPrefix(rest, `"""`) || strings.HasPrefix(rest, "'''")) {
+			quote := `"""`
+			endState := StateTripleDouble
+			if rest[0] == '\'' {
+				quote = "'''"
+				endState = StateTripleSingle
+			}
+			end := strings.Index(rest[3:], quote)
+			if end < 0 {
+				emit(len(rest), p.String, false)
+				return runs, endState
+			}
+			emit(end+6, p.String, false)
+			i += end + 6
 			continue
 		}
 		// Strings.
 		if rest[0] == '"' || rest[0] == '\'' || rest[0] == '`' {
 			quote := rest[0]
-			i := 1
-			for i < len(rest) {
-				if rest[i] == '\\' && i+1 < len(rest) {
-					i += 2
-					continue
+			n, closed := scanQuoted(rest, quote)
+			emit(n, p.String, false)
+			i += n
+			if !closed {
+				if quote == '`' {
+					// Template literals and command substitutions span
+					// lines.
+					return runs, StateRawString
 				}
-				if rest[i] == quote {
-					i++
-					break
-				}
-				i++
+				// " and ' strings end at the newline in these languages.
+				return runs, StateNormal
 			}
-			runs = append(runs, text.TextRun{Len: i, Font: mono(false), Color: p.String})
-			rest = rest[i:]
 			continue
 		}
 		// Numbers.
 		if rest[0] >= '0' && rest[0] <= '9' {
-			i := 0
-			for i < len(rest) && isWordByte(rest[i]) {
-				i++
+			i2 := 0
+			for i2 < len(rest) && isWordByte(rest[i2]) {
+				i2++
 			}
-			runs = append(runs, text.TextRun{Len: i, Font: mono(false), Color: p.Number})
-			rest = rest[i:]
+			emit(i2, p.Number, false)
+			i += i2
 			continue
 		}
 		// Words.
 		if isWordStartByte(rest[0]) {
-			i := 0
-			for i < len(rest) && isWordByte(rest[i]) {
-				i++
+			i2 := 0
+			for i2 < len(rest) && isWordByte(rest[i2]) {
+				i2++
 			}
-			word := rest[:i]
-			f := mono(false)
+			word := rest[:i2]
+			bold := false
 			color := p.Text
 			switch {
 			case def.keywords[word]:
 				color = p.Keyword
-				f = mono(true)
+				bold = true
 			case isTypeLike(word):
 				color = p.Type
 			}
 			// Call vs field: peek the next non-space char.
-			tail := strings.TrimLeft(rest[i:], " \t")
+			tail := strings.TrimLeft(rest[i2:], " \t")
 			if strings.HasPrefix(tail, "(") {
 				color = p.Function
-				f = mono(false)
+				bold = false
 			}
-			runs = append(runs, text.TextRun{Len: i, Font: f, Color: color})
-			rest = rest[i:]
+			emit(i2, color, bold)
+			i += i2
 			continue
 		}
 		// Punctuation and whitespace: single byte.
-		runs = append(runs, text.TextRun{Len: 1, Font: mono(false), Color: p.Text})
-		rest = rest[1:]
+		emit(1, p.Text, false)
+		i++
 	}
-	return runs
+	return runs, StateNormal
+}
+
+// genericScanState is genericRunsIn's transitions without building runs:
+// it returns the context the next line starts in.
+func genericScanState(line string, def *genericLangDef, st LineState) LineState {
+	i := 0
+	if st&StateTripleDouble != 0 || st&StateTripleSingle != 0 {
+		quote := `"""`
+		if st&StateTripleSingle != 0 {
+			quote = "'''"
+		}
+		end := strings.Index(line[i:], quote)
+		if end < 0 {
+			return st
+		}
+		i += end + 3
+	} else if st&StateBlockComment != 0 {
+		end := strings.Index(line[i:], "*/")
+		if end < 0 {
+			return StateBlockComment
+		}
+		i += end + 2
+	} else if st&StateRawString != 0 {
+		end := strings.IndexByte(line[i:], '`')
+		if end < 0 {
+			return StateRawString
+		}
+		i += end + 1
+	}
+	for i < len(line) {
+		rest := line[i:]
+		for _, c := range def.lineComments {
+			if strings.HasPrefix(rest, c) {
+				// Line comments never carry over.
+				return StateNormal
+			}
+		}
+		if def.blockComments && strings.HasPrefix(rest, "/*") {
+			end := strings.Index(rest[2:], "*/")
+			if end < 0 {
+				return StateBlockComment
+			}
+			i += end + 4
+			continue
+		}
+		if def.tripleQuotes && (strings.HasPrefix(rest, `"""`) || strings.HasPrefix(rest, "'''")) {
+			quote := `"""`
+			endState := StateTripleDouble
+			if rest[0] == '\'' {
+				quote = "'''"
+				endState = StateTripleSingle
+			}
+			end := strings.Index(rest[3:], quote)
+			if end < 0 {
+				return endState
+			}
+			i += end + 6
+			continue
+		}
+		if rest[0] == '"' || rest[0] == '\'' || rest[0] == '`' {
+			n, closed := scanQuoted(rest, rest[0])
+			i += n
+			if !closed && rest[0] == '`' {
+				return StateRawString
+			}
+			continue
+		}
+		i++
+	}
+	return StateNormal
 }
 
 func isWordStartByte(b byte) bool {

@@ -422,7 +422,7 @@ func stepButton(id, label string, t ui.Theme, onClick func(w *gpui.Window)) gpui
 	}
 	return elements.NewDiv().
 		ID(elements.ButtonID(id)).
-		Tooltip(tip).
+		TooltipBuilder(ui.Tooltip(tip)).
 		Flex().ItemsCenter().JustifyCenter().
 		W(ui.Px(22)).H(ui.Px(22)).Rounded(ui.AbsPx(4)).
 		BgColor(t.Surface1).
@@ -469,7 +469,7 @@ func textInputRow(ws *Workspace, t ui.Theme, update updateFn, st *ui.InputState,
 func closeButton(id string, t ui.Theme, onClick func(w *gpui.Window)) gpui.Element {
 	return elements.NewDiv().
 		ID(elements.ButtonID(id)).
-		Tooltip("Close (Esc)").
+		TooltipBuilder(ui.Tooltip("Close (Esc)")).
 		Flex().ItemsCenter().JustifyCenter().
 		W(ui.Px(24)).H(ui.Px(24)).Rounded(ui.AbsPx(4)).
 		CursorPointer().

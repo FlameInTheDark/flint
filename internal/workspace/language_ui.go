@@ -33,7 +33,7 @@ func renderCompletions(ws *Workspace, t ui.Theme, update updateFn, winW, winH fl
 	line, _ := b.OffsetToLC(b.Cursor)
 	x := ws.paneLeft()
 	if ws.ShowLineNumbers {
-		x += editor.GutterWidth(b.LineCount(), ws.CharAdvance)
+		x += editor.GutterWidth(b.LineCount(), ws.CharAdvance, editor.Foldable(b.LanguageOf()))
 	} else {
 		x += editor.GutterLeftInset
 	}
@@ -117,7 +117,7 @@ func renderDocumentation(ws *Workspace, t ui.Theme, update updateFn, w *gpui.Win
 			Child(elements.NewDiv().Flex1().MinW_0().OverflowHidden().WhitespaceNowrap().TextEllipsis().Child(elements.NewText(title).WithTextColor(t.Text))).
 			Child(elements.NewDiv().ID(elements.ButtonID("documentation-close")).W(ui.Px(24)).H(ui.Px(24)).FlexShrink(0).
 				Flex().ItemsCenter().JustifyCenter().Rounded(ui.AbsPx(4)).Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface2) }).
-				Tooltip("Close documentation (Esc)").CursorPointer().OnClick(func(_ gpui.ClickEvent, w *gpui.Window) {
+				TooltipBuilder(ui.Tooltip("Close documentation (Esc)")).CursorPointer().OnClick(func(_ gpui.ClickEvent, w *gpui.Window) {
 				update(func(s *Workspace) { s.documentation = nil })
 				w.Focus(ws.FocusEditor)
 				w.Refresh()

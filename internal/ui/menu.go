@@ -156,58 +156,91 @@ type MenuBarConfig struct {
 	VeryCompact bool
 }
 
+// menuBarItemElement builds one top-level menu entry. The real menu bar and
+// the open-dropdown hover strip share it, so the strip's items land on
+// exactly the bar's geometry and behave the same. idPrefix separates the
+// two copies' element ids ("menubar-" / "menubar-strip-") so hitbox keys
+// stay unique.
+func menuBarItemElement(cfg MenuBarConfig, idx int, idPrefix string) *elements.Div {
+	t := cfg.Theme
+	menu := cfg.Menus[idx]
+	active := cfg.State.Open == idx
+	// Top-level navigation must stay readable when inactive; using the
+	// metadata color here made it disappear into dark window chrome.
+	labelColor := t.Text.Alpha(0.78)
+	if active {
+		labelColor = t.Text
+	}
+	bg := gc.TransparentBlack()
+	if active {
+		bg = t.Surface1
+	}
+	return elements.NewDiv().
+		ID(elements.ButtonID(idPrefix + menu.Title)).
+		Flex().ItemsCenter().Px(DefPx(12)).
+		CursorPointer().
+		BgColor(bg).
+		Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface1) }).
+		OnClick(func(ev gpui.ClickEvent, w *gpui.Window) {
+			if cfg.State.Open == idx {
+				cfg.OnClose()
+				cfg.Update(func(*MenuState) {})
+			} else {
+				x := float32(0)
+				if hb, ok := w.ListenerHitbox(); ok {
+					x = float32(hb.Bounds.Origin.X)
+				}
+				cfg.OnOpen(idx, x)
+			}
+		}).
+		OnMouseMove(func(ev platform.MouseMoveEvent, w *gpui.Window) {
+			// Switch menus on hover while one is open (but not while
+			// the user is pressing the mouse over the bar). On the real
+			// bar this only runs while no popup covers it; the live
+			// switching happens on the hover strip (MenuHoverStrip).
+			if cfg.State.Open >= 0 && cfg.State.Open != idx && !ev.Dragging() {
+				x := cfg.State.X
+				if hb, ok := w.ListenerHitbox(); ok {
+					x = float32(hb.Bounds.Origin.X)
+				}
+				cfg.OnOpen(idx, x)
+			}
+		}).
+		Child(elements.NewText(menu.Title).WithTextColor(labelColor))
+}
+
+// MenuHoverStrip builds the overlay that keeps the menu bar interactive
+// while one of its dropdowns is open. The popup's full-window dismiss layer
+// occludes everything under it, so with the strip absent, moving the mouse
+// across the bar (or clicking another title) reaches nothing — the only way
+// out was to close the menu first. The strip carries the same items built by
+// the same code at the same positions; each item occludes its own bounds so
+// a press never falls through to the dismiss layer (which would close the
+// menu before the item's toggle could run), while the gaps between items
+// keep dismissing.
+func MenuHoverStrip(cfg MenuBarConfig, top, width float32) gpui.Element {
+	strip := elements.NewDiv().
+		Absolute().Left(Px(0)).Top(Px(top)).
+		W(Px(width)).H(Px(MenuBarHeight)).
+		Flex().ItemsStretch().TextSize(AbsPx(13))
+	for i := range cfg.Menus {
+		strip.Child(menuBarItemElement(cfg, i, "menubar-strip-").Occlude())
+	}
+	return strip
+}
+
 // RenderMenuBar renders the application menu bar. Each entry toggles its
-// dropdown; while a dropdown is open, moving the mouse across the bar
-// switches menus (Windows/the upstream editor behavior).
+// dropdown; while a dropdown is open the hover strip (MenuHoverStrip,
+// rendered above the popup's dismiss layer) switches menus under the
+// pointer — the Windows/the upstream editor behavior.
 func RenderMenuBar(cfg MenuBarConfig) gpui.Element {
 	t := cfg.Theme
 	bar := elements.NewDiv().Flex().ItemsStretch().H(Px(MenuBarHeight)).TextSize(AbsPx(13)).
 		FlexShrink(0). // fixed chrome: never yields height to a content overflow
 		BgColor(t.Surface).BorderB_1().BorderColor(t.Surface1)
 
-	for i, menu := range cfg.Menus {
-		idx := i
-		active := cfg.State.Open == idx
-		// Top-level navigation must stay readable when inactive; using the
-		// metadata color here made it disappear into dark window chrome.
-		labelColor := t.Text.Alpha(0.78)
-		if active {
-			labelColor = t.Text
-		}
-		bg := gc.TransparentBlack()
-		if active {
-			bg = t.Surface1
-		}
-		bar = bar.Child(elements.NewDiv().
-			ID(elements.ButtonID("menubar-" + menu.Title)).
-			Flex().ItemsCenter().Px(DefPx(12)).
-			CursorPointer().
-			BgColor(bg).
-			Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface1) }).
-			OnClick(func(ev gpui.ClickEvent, w *gpui.Window) {
-				if cfg.State.Open == idx {
-					cfg.OnClose()
-					cfg.Update(func(*MenuState) {})
-				} else {
-					x := float32(0)
-					if hb, ok := w.ListenerHitbox(); ok {
-						x = float32(hb.Bounds.Origin.X)
-					}
-					cfg.OnOpen(idx, x)
-				}
-			}).
-			OnMouseMove(func(ev platform.MouseMoveEvent, w *gpui.Window) {
-				// Switch menus on hover while one is open (but not while
-				// the user is pressing the mouse over the bar).
-				if cfg.State.Open >= 0 && cfg.State.Open != idx && !ev.Dragging() {
-					x := cfg.State.X
-					if hb, ok := w.ListenerHitbox(); ok {
-						x = float32(hb.Bounds.Origin.X)
-					}
-					cfg.OnOpen(idx, x)
-				}
-			}).
-			Child(elements.NewText(menu.Title).WithTextColor(labelColor)))
+	for i := range cfg.Menus {
+		bar = bar.Child(menuBarItemElement(cfg, i, "menubar-"))
 	}
 
 	// Compact IDE toolbar: all buttons invoke real workspace actions.
@@ -225,7 +258,7 @@ func RenderMenuBar(cfg MenuBarConfig) gpui.Element {
 			target = "Active Editor"
 		}
 		selector := elements.NewDiv().ID(elements.ButtonID("toolbar-run-config")).Flex().ItemsCenter().Gap(DefPx(5)).Px(DefPx(6)).CursorPointer().
-			Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface1) }).Tooltip("Go run configurations: " + target).
+			Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface1) }).TooltipBuilder(Tooltip("Go run configurations: " + target)).
 			OnClick(func(_ gpui.ClickEvent, w *gpui.Window) { cfg.OnRunConfig(w) })
 		if !cfg.Compact && cfg.RunTarget != "" {
 			if r := []rune(target); len(r) > 18 {
@@ -249,7 +282,7 @@ func RenderMenuBar(cfg MenuBarConfig) gpui.Element {
 			icon = "stop"
 		}
 		return elements.NewDiv().ID(elements.ButtonID("toolbar-" + id)).Flex().ItemsCenter().JustifyCenter().W(Px(32)).CursorPointer().
-			Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface1) }).Tooltip(tip).
+			Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface1) }).TooltipBuilder(Tooltip(tip)).
 			OnClick(func(_ gpui.ClickEvent, w *gpui.Window) { action(w) }).Child(ToolbarIcon(icon, color))
 	}
 	if cfg.OnStop != nil {
@@ -276,7 +309,7 @@ func RenderMenuBar(cfg MenuBarConfig) gpui.Element {
 			bar = bar.Child(tool("search", "Search Project (Ctrl+P)", cfg.OnSearch))
 		} else {
 			bar = bar.Child(elements.NewDiv().ID(elements.ButtonID("toolbar-search")).Flex().ItemsCenter().Gap(DefPx(7)).Px(DefPx(9)).CursorPointer().
-				Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface1) }).Tooltip("Search Project (Ctrl+P)").
+				Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface1) }).TooltipBuilder(Tooltip("Search Project (Ctrl+P)")).
 				OnClick(func(_ gpui.ClickEvent, w *gpui.Window) { cfg.OnSearch(w) }).Child(ToolbarIcon("search", t.Dim)).
 				Child(elements.NewText("Search Project").WithTextColor(t.Dim)).Child(elements.NewDiv().TextSize(AbsPx(11)).Child(elements.NewText("Ctrl+P").WithTextColor(t.Overlay))))
 		}
@@ -314,6 +347,12 @@ type PopupConfig struct {
 	OnClose func()
 	// RestoreFocus is called after closing so focus returns to the editor.
 	RestoreFocus func(w *gpui.Window)
+	// MenuBarElement, when set, is layered between the dismiss layer and the
+	// panel: the menu-bar hover strip (ui.MenuHoverStrip) that keeps the bar
+	// interactive while a top-level dropdown is open — the dismiss layer
+	// alone occludes the bar, so neither hovering nor clicking another menu
+	// title could reach it. Context menus leave it nil.
+	MenuBarElement gpui.Element
 }
 
 // RenderPopupLayer renders the [dismiss layer, popup panel] overlay stack.
@@ -516,5 +555,9 @@ func RenderPopupLayer(cfg PopupConfig) []gpui.Element {
 		}
 		panel = panel.Child(row)
 	}
-	return []gpui.Element{dismiss, panel}
+	layers := []gpui.Element{dismiss}
+	if cfg.MenuBarElement != nil {
+		layers = append(layers, cfg.MenuBarElement)
+	}
+	return append(layers, panel)
 }

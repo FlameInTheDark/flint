@@ -38,7 +38,7 @@ func TestCursorClickNearestBoundary(t *testing.T) {
 	if pane.w == 0 {
 		t.Fatal("editor pane hitbox not found")
 	}
-	gutterW := editor.GutterWidth(buf.LineCount(), advance)
+	gutterW := editor.GutterWidth(buf.LineCount(), advance, editor.Foldable(buf.LanguageOf()))
 	line0Y := pane.y + 8 // first visible line row
 
 	line0 := buf.Line(0)

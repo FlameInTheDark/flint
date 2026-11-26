@@ -238,10 +238,12 @@ func TestVisualTabIconsCentered(t *testing.T) {
 
 	hw := hp.LastWindow()
 	img := hw.Image()
-	// The .go tab icon paints in the current theme's Sky color. Collect its
-	// pixels inside the tab bar band and require the icon's ink to be
-	// vertically centered around the band's middle, not glued to the top.
-	sky := handle.View.Read(cx).Theme().Sky.ToRgb()
+	// The .go tab icon paints in the fixed Go accent color (see
+	// ui.FileAccentColor — file-type glyphs no longer tint with the
+	// theme). Collect its pixels inside the tab bar band and require the
+	// icon's ink to be vertically centered around the band's middle, not
+	// glued to the top.
+	goIcon := ui.FileAccentColor("main.go", handle.View.Read(cx).Theme()).ToRgb()
 	top := float32(ui.MenuBarHeight)
 	bottom := top + ui.TabBarHeight
 	minY, maxY := float32(1e9), float32(-1)
@@ -249,7 +251,7 @@ func TestVisualTabIconsCentered(t *testing.T) {
 		for x := 0; x < 140; x++ { // first tab region
 			i := (y*img.Width + x) * 4
 			r, g, b := img.Pixels[i], img.Pixels[i+1], img.Pixels[i+2]
-			if absf(float32(r)-sky.R*255) < 24 && absf(float32(g)-sky.G*255) < 24 && absf(float32(b)-sky.B*255) < 24 {
+			if absf(float32(r)-goIcon.R*255) < 24 && absf(float32(g)-goIcon.G*255) < 24 && absf(float32(b)-goIcon.B*255) < 24 {
 				fy := float32(y)
 				if fy < minY {
 					minY = fy

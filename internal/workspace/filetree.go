@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strings"
 
-	gc "github.com/FlameInTheDark/go-gpui/color"
 	"github.com/FlameInTheDark/go-gpui/elements"
 	"github.com/FlameInTheDark/go-gpui/geometry"
 	"github.com/FlameInTheDark/go-gpui/gpui"
@@ -148,25 +147,6 @@ func flattenVisible(n *TreeNode, depth int, out *[]treeRow) {
 	}
 }
 
-// treeFileColor picks an icon color per file extension.
-func treeFileColor(name string, t ui.Theme) gc.Hsla {
-	switch {
-	case strings.HasSuffix(name, ".go"):
-		return t.Sky
-	case strings.HasSuffix(name, ".md"):
-		return t.Peach
-	case strings.HasSuffix(name, ".mod"), strings.HasSuffix(name, ".sum"):
-		return t.Mauve
-	case strings.HasSuffix(name, ".png"), strings.HasSuffix(name, ".jpg"),
-		strings.HasSuffix(name, ".svg"), strings.HasSuffix(name, ".ico"):
-		return t.Yellow
-	case strings.HasSuffix(name, ".ts"), strings.HasSuffix(name, ".js"),
-		strings.HasSuffix(name, ".rs"), strings.HasSuffix(name, ".py"):
-		return t.Green
-	}
-	return t.Dim
-}
-
 // TreeCallbacks wires tree interactions to the workspace.
 type TreeCallbacks struct {
 	// Toggle expands/collapses a folder node.
@@ -206,7 +186,7 @@ func RenderTree(root *TreeNode, t ui.Theme, activePath string, width float32, cb
 		Child(elements.NewDiv().Flex1().OverflowHidden().WhitespaceNowrap().TextSize(ui.AbsPx(12)).Child(elements.NewText(name).WithTextColor(t.Dim)))
 	button := func(id, icon, tip string, action func()) gpui.Element {
 		return elements.NewDiv().ID(elements.ButtonID("tree-" + id)).W(ui.Px(22)).H(ui.Px(22)).FlexShrink(0).Flex().ItemsCenter().JustifyCenter().Rounded(ui.AbsPx(4)).CursorPointer().
-			Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface1) }).Tooltip(tip).
+			Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface1) }).TooltipBuilder(ui.Tooltip(tip)).
 			OnClick(func(_ gpui.ClickEvent, w *gpui.Window) { action(); w.Refresh() }).Child(ui.ToolbarIcon(icon, t.Dim))
 	}
 	if cb.Refresh != nil {
@@ -355,7 +335,7 @@ func RenderTree(root *TreeNode, t ui.Theme, activePath string, width float32, cb
 		if node.IsDir {
 			row = row.Child(ui.FolderIcon(t.Sky, node.Expanded))
 		} else {
-			row = row.Child(ui.FileIcon(treeFileColor(node.Name, t)))
+			row = row.Child(ui.FileTypeIcon(node.Name, t))
 		}
 		row = row.Child(elements.NewDiv().W(ui.Px(7)))
 

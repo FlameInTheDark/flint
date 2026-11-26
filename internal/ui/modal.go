@@ -92,7 +92,7 @@ func RenderModal(cfg ModalConfig) []gpui.Element {
 					Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface1) }).
 					Child(Icon("x", t.Dim, 14))
 				if cfg.OnClose != nil {
-					btn = btn.Tooltip("Close dialog (Esc)").OnClick(func(ev gpui.ClickEvent, w *gpui.Window) {
+					btn = btn.TooltipBuilder(Tooltip("Close dialog (Esc)")).OnClick(func(ev gpui.ClickEvent, w *gpui.Window) {
 						cfg.OnClose(w)
 						w.Refresh()
 					})

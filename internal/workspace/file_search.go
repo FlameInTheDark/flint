@@ -476,7 +476,7 @@ func renderFileSearch(ws *Workspace, t ui.Theme, update updateFn, w *gpui.Window
 			} else if detail == "." {
 				detail = ""
 			}
-			row.Child(ui.FileIcon(treeFileColor(hit.file.path, t)))
+			row.Child(ui.FileTypeIcon(filepath.Base(hit.file.path), t))
 			if hit.kind != "" {
 				row.Child(elements.NewDiv().TextSize(ui.AbsPx(12)).FlexShrink(0).Child(elements.NewText(hit.kind).WithTextColor(t.Accent)))
 			}

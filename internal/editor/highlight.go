@@ -21,12 +21,16 @@ type Palette struct {
 	Text     gc.Hsla
 	Heading  gc.Hsla
 	Link     gc.Hsla
+	// Todo colors TODO/FIXME tags inside comments (GoLand paints them
+	// in a dedicated color so they jump out of gray comment text).
+	Todo gc.Hsla
 }
 
 // langByExt maps file extensions to highlight languages (the language
 // picker's detection side; overrides go through Buffer.LangOverride).
 var langByExt = map[string]string{
 	".go": "go", ".md": "markdown", ".markdown": "markdown",
+	".mod": "gomod", ".sum": "gosum",
 	".c": "c", ".h": "c",
 	".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".hpp": "cpp", ".hh": "cpp",
 	".cs":   "csharp",
@@ -54,6 +58,8 @@ var langByExt = map[string]string{
 var Languages = []LanguageInfo{
 	{"Plain Text", "text", []string{"txt"}},
 	{"Go", "go", []string{"go"}},
+	{"Go Module", "gomod", []string{"mod"}},
+	{"Go Sum", "gosum", []string{"sum"}},
 	{"Markdown", "markdown", []string{"md", "markdown"}},
 	{"C", "c", []string{"c", "h"}},
 	{"C++", "cpp", []string{"cpp", "cc", "cxx", "hpp"}},
@@ -104,23 +110,155 @@ func Language(name string) string {
 	return "text"
 }
 
-// Highlight tokenizes one line into styled runs.
+// LineState carries the highlighting context from one line to the next:
+// Go raw strings (`...`), C-like block comments (/* ... */) and Python
+// triple-quoted strings span lines, so a line's colors depend on how the
+// text before it ended. Zero is the top-of-file context.
+type LineState uint8
+
+const (
+	// StateNormal starts a line outside any multi-line construct.
+	StateNormal LineState = 0
+	// StateRawString: inside a `...` literal that opened on an earlier
+	// line (Go raw string, JS/TS template literal, shell command
+	// substitution).
+	StateRawString LineState = 1
+	// StateBlockComment: inside a /* ... */ comment that opened on an
+	// earlier line (Go and the C-like generic languages).
+	StateBlockComment LineState = 2
+	// StateTripleDouble / StateTripleSingle: inside a Python """..."""
+	// or '''...''' string that opened on an earlier line.
+	StateTripleDouble LineState = 4
+	StateTripleSingle LineState = 8
+)
+
+// Highlight tokenizes one line into styled runs (top-of-file context; use
+// HighlightIn for a line that continues a multi-line construct).
 func Highlight(line, lang string, p Palette) []text.TextRun {
+	runs, _ := HighlightIn(line, lang, StateNormal, p)
+	return runs
+}
+
+// HighlightIn tokenizes one line starting inside the given cross-line
+// context. It returns the styled runs plus the context the next line
+// starts in (raw string / block comment / triple quote still open, or
+// StateNormal).
+func HighlightIn(line, lang string, st LineState, p Palette) ([]text.TextRun, LineState) {
+	runs, end := highlightIn(line, lang, st, p)
+	return splitTodoTags(runs, line, p), end
+}
+
+// highlightIn is HighlightIn's tokenizer dispatch.
+func highlightIn(line, lang string, st LineState, p Palette) ([]text.TextRun, LineState) {
 	switch lang {
 	case "go":
-		return goRuns(line, p)
+		return goRunsIn(line, st, p)
+	case "gomod":
+		return gomodRunsIn(line, st, p)
+	case "gosum":
+		return gosumRuns(line, p), StateNormal
 	case "markdown":
-		return markdownRuns(line, p)
+		return markdownRuns(line, p), StateNormal
 	case "json":
-		return jsonRuns(line, p)
+		return jsonRuns(line, p), StateNormal
 	case "yaml", "toml":
-		return yamlRuns(line, p)
+		return yamlRuns(line, p), StateNormal
 	default:
 		if def := genericLang[lang]; def != nil {
-			return genericRuns(line, def, p)
+			return genericRunsIn(line, def, st, p)
 		}
-		return []text.TextRun{{Len: len(line), Font: mono(false), Color: p.Text}}
+		return []text.TextRun{{Len: len(line), Font: mono(false), Color: p.Text}}, StateNormal
 	}
+}
+
+// todoTags are the comment tag words repainted with the palette's Todo
+// color (GoLand's default TODO/FIXME patterns, matched word-bounded and
+// case-insensitively; the workspace's TODO panel scans the same tags).
+var todoTags = []string{"todo", "fixme"}
+
+// splitTodoTags repaints TODO/FIXME tag words inside comment-colored runs
+// with the palette's Todo color, bold like GoLand's TODO style. Tags only
+// repaint inside comments (the runs whose color is exactly p.Comment), so
+// "TODO" in a string literal keeps its string color. A palette without a
+// Todo color (zero alpha) skips the pass.
+func splitTodoTags(runs []text.TextRun, line string, p Palette) []text.TextRun {
+	if p.Todo.A == 0 {
+		return runs
+	}
+	var out []text.TextRun
+	off := 0
+	for _, r := range runs {
+		start, end := off, off+r.Len
+		off = end
+		if end > len(line) || r.Color != p.Comment {
+			out = append(out, r)
+			continue
+		}
+		seg := line[start:end]
+		matches := [][2]int{}
+		for i := 0; i < len(seg); {
+			if i > 0 && isTodoWordByte(seg[i-1]) {
+				i++
+				continue
+			}
+			n := 0
+			for _, tag := range todoTags {
+				if len(tag) > n && i+len(tag) <= len(seg) &&
+					strings.EqualFold(seg[i:i+len(tag)], tag) {
+					n = len(tag)
+				}
+			}
+			if n == 0 {
+				i++
+				continue
+			}
+			// Word-boundary on the right edge.
+			if i+n < len(seg) && isTodoWordByte(seg[i+n]) {
+				i++
+				continue
+			}
+			matches = append(matches, [2]int{i, i + n})
+			i += n
+		}
+		if len(matches) == 0 {
+			out = append(out, r)
+			continue
+		}
+		prev := 0
+		for _, m := range matches {
+			if m[0] > prev {
+				out = append(out, text.TextRun{Len: m[0] - prev, Font: r.Font, Color: r.Color})
+			}
+			out = append(out, text.TextRun{Len: m[1] - m[0], Font: mono(true), Color: p.Todo})
+			prev = m[1]
+		}
+		if prev < len(seg) {
+			out = append(out, text.TextRun{Len: len(seg) - prev, Font: r.Font, Color: r.Color})
+		}
+	}
+	return out
+}
+
+func isTodoWordByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_'
+}
+
+// nextLineState scans line for construct boundaries only (no runs) and
+// returns the context the next line starts in. The scanners and the
+// tokenizers must agree on every transition; highlight_state_test.go
+// asserts that for each language.
+func nextLineState(line, lang string, st LineState) LineState {
+	switch lang {
+	case "go", "gomod":
+		// go.mod quotes and comments lex exactly like Go's.
+		return goScanState(line, st)
+	case "markdown", "json", "yaml", "toml", "gosum", "text":
+		return StateNormal // these languages have no multi-line constructs
+	}
+	if def := genericLang[lang]; def != nil {
+		return genericScanState(line, def, st)
+	}
+	return StateNormal
 }
 
 func mono(bold bool) font.Font {
@@ -150,67 +288,181 @@ var goConstants = map[string]bool{
 	"true": true, "false": true, "nil": true, "iota": true,
 }
 
-// goRuns tokenizes one line of Go source.
-func goRuns(line string, p Palette) []text.TextRun {
-	var runs []text.TextRun
-	rest := line
-	for len(rest) > 0 {
-		_, color, bold, n := goToken(rest, p)
-		f := mono(false)
-		if bold {
-			f = mono(true)
+// scanQuoted scans a quoted literal from s[0] (s[0] must be the quote
+// byte), honoring backslash escapes; it returns the consumed length and
+// whether the closing quote was found.
+func scanQuoted(s string, quote byte) (int, bool) {
+	for i := 1; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			i++
+			continue
 		}
-		runs = append(runs, text.TextRun{Len: n, Font: f, Color: color})
-		rest = rest[n:]
+		if s[i] == quote {
+			return i + 1, true
+		}
 	}
+	return len(s), false
+}
+
+// scanGoRawString scans a backtick-delimited Go raw string. Backslashes
+// have no special meaning, including immediately before the closing tick.
+func scanGoRawString(s string) (int, bool) {
+	if end := strings.IndexByte(s[1:], '`'); end >= 0 {
+		return end + 2, true
+	}
+	return len(s), false
+}
+
+// goRuns tokenizes one line of Go source (top-of-file context).
+func goRuns(line string, p Palette) []text.TextRun {
+	runs, _ := goRunsIn(line, StateNormal, p)
 	return runs
 }
 
-func goToken(s string, p Palette) (string, gc.Hsla, bool, int) {
-	switch {
-	case strings.HasPrefix(s, "//"):
-		return s, p.Comment, false, len(s)
-	case strings.HasPrefix(s, "\""):
-		if end := strings.IndexByte(s[1:], '"'); end >= 0 {
-			return s[:end+2], p.String, false, end + 2
+// goRunsIn tokenizes one line of Go source starting inside the given
+// context and returns the runs plus the context for the next line. Raw
+// strings and /* */ comments span lines; interpreted strings and line
+// comments cannot.
+func goRunsIn(line string, st LineState, p Palette) ([]text.TextRun, LineState) {
+	var runs []text.TextRun
+	emit := func(n int, color gc.Hsla, bold bool) {
+		if n > 0 {
+			runs = append(runs, text.TextRun{Len: n, Font: mono(bold), Color: color})
 		}
-		return s, p.String, false, len(s)
-	case strings.HasPrefix(s, "`"):
-		if end := strings.IndexByte(s[1:], '`'); end >= 0 {
-			return s[:end+2], p.String, false, end + 2
+	}
+	i := 0
+	// Resume a construct carried over from the previous line.
+	if st&StateRawString != 0 {
+		end := strings.IndexByte(line, '`')
+		if end < 0 {
+			emit(len(line), p.String, false)
+			return runs, StateRawString
 		}
-		return s, p.String, false, len(s)
+		end++
+		emit(end, p.String, false)
+		i = end
+	} else if st&StateBlockComment != 0 {
+		end := strings.Index(line, "*/")
+		if end < 0 {
+			emit(len(line), p.Comment, false)
+			return runs, StateBlockComment
+		}
+		end += 2
+		emit(end, p.Comment, false)
+		i = end
 	}
-	n := strings.IndexFunc(s, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_')
-	})
-	if n <= 0 {
-		n = 1
-		return s[:n], p.Text, false, n
+	for i < len(line) {
+		rest := line[i:]
+		switch {
+		case strings.HasPrefix(rest, "//"):
+			emit(len(rest), p.Comment, false)
+			return runs, StateNormal
+		case strings.HasPrefix(rest, "/*"):
+			end := strings.Index(rest[2:], "*/")
+			if end < 0 {
+				emit(len(rest), p.Comment, false)
+				return runs, StateBlockComment
+			}
+			emit(end+4, p.Comment, false)
+			i += end + 4
+		case rest[0] == '"':
+			// Interpreted strings cannot span lines; an unterminated one
+			// ends at the newline.
+			n, _ := scanQuoted(rest, '"')
+			emit(n, p.String, false)
+			i += n
+		case rest[0] == '`':
+			n, closed := scanGoRawString(rest)
+			emit(n, p.String, false)
+			i += n
+			if !closed {
+				return runs, StateRawString
+			}
+		default:
+			n := strings.IndexFunc(rest, func(r rune) bool {
+				return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_')
+			})
+			if n < 0 {
+				n = len(rest) // the line ends inside this word
+			}
+			if n == 0 {
+				emit(1, p.Text, false)
+				i++
+				continue
+			}
+			word := rest[:n]
+			color, bold := p.Text, false
+			switch {
+			case goKeywords[word]:
+				color, bold = p.Keyword, true
+			case goTypes[word]:
+				color = p.Type
+			case goConstants[word]:
+				color = p.Keyword
+			case word[0] >= 'A' && word[0] <= 'Z':
+				color = p.Type
+			case word[0] >= '0' && word[0] <= '9':
+				color = p.Number
+			default:
+				// Call vs field: peek the next non-space char.
+				tail := strings.TrimLeft(rest[n:], " \t")
+				if strings.HasPrefix(tail, "(") {
+					color = p.Function
+				} else if strings.HasPrefix(tail, ".") {
+					color = p.Field
+				}
+			}
+			emit(n, color, bold)
+			i += n
+		}
 	}
-	word := s[:n]
-	switch {
-	case goKeywords[word]:
-		return word, p.Keyword, true, n
-	case goTypes[word]:
-		return word, p.Type, false, n
-	case goConstants[word]:
-		return word, p.Keyword, false, n
-	case word[0] >= 'A' && word[0] <= 'Z':
-		return word, p.Type, false, n
-	case word[0] >= '0' && word[0] <= '9':
-		return word, p.Number, false, n
+	return runs, StateNormal
+}
+
+// goScanState is goRunsIn's transitions without building runs: it returns
+// the context the next line starts in.
+func goScanState(line string, st LineState) LineState {
+	i := 0
+	if st&StateRawString != 0 {
+		end := strings.IndexByte(line, '`')
+		if end < 0 {
+			return StateRawString
+		}
+		i = end + 1
+	} else if st&StateBlockComment != 0 {
+		end := strings.Index(line, "*/")
+		if end < 0 {
+			return StateBlockComment
+		}
+		i = end + 2
 	}
-	// Call vs field: peek the next non-space char.
-	rest := s[n:]
-	rest = strings.TrimLeft(rest, " \t")
-	if strings.HasPrefix(rest, "(") {
-		return word, p.Function, false, n
+	for i < len(line) {
+		c := line[i]
+		switch {
+		case c == '"':
+			n, _ := scanQuoted(line[i:], '"')
+			i += n
+		case c == '`':
+			n, closed := scanGoRawString(line[i:])
+			i += n
+			if !closed {
+				return StateRawString
+			}
+		case c == '/' && strings.HasPrefix(line[i:], "//"):
+			// A line comment runs to the newline and never carries over
+			// (a backtick inside a comment does not open a raw string).
+			return StateNormal
+		case c == '/' && strings.HasPrefix(line[i:], "/*"):
+			end := strings.Index(line[i+2:], "*/")
+			if end < 0 {
+				return StateBlockComment
+			}
+			i += end + 4
+		default:
+			i++
+		}
 	}
-	if strings.HasPrefix(rest, ".") {
-		return word, p.Field, false, n
-	}
-	return word, p.Text, false, n
+	return StateNormal
 }
 
 // markdownRuns tokenizes one line of markdown.

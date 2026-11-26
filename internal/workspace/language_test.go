@@ -162,7 +162,7 @@ func TestLanguageOverlayKeyboardAndCtrlClick(t *testing.T) {
 	// Drain the post-completion synchronization, then Ctrl-click the first word.
 	doc := ws.languageDocs[ws.Buf()]
 	<-doc.server.queue
-	x := editor.GutterWidth(ws.Buf().LineCount(), ws.CharAdvance) + ws.CharAdvance*1.2
+	x := editor.GutterWidth(ws.Buf().LineCount(), ws.CharAdvance, editor.Foldable(ws.Buf().LanguageOf())) + ws.CharAdvance*1.2
 	y := float32(ui.MenuBarHeight+ui.TabBarHeight) + ws.LineHeight/2
 	hw.DispatchInput(platform.MouseDownEvent{Button: platform.ButtonLeft, Position: geometry.PointPixels(x, y), Modifiers: keymap.Modifiers{Control: true}})
 	select {
@@ -363,7 +363,7 @@ func TestWorkspaceWithGopls(t *testing.T) {
 	sys := handle.Window.TextSystem()
 	fid, _ := sys.FontID(font.Font{Family: "Monospace", Weight: font.WeightNormal})
 	layout := sys.LayoutLine(lineText, style.DefaultTextStyle().FontSize.ToPixels(handle.Window.RemSize()), []gptext.FontRun{{Len: len(lineText), FontID: fid}})
-	x := editor.GutterWidth(ws.Buf().LineCount(), ws.CharAdvance) + layout.XForIndex(col).AsF32() + 1
+	x := editor.GutterWidth(ws.Buf().LineCount(), ws.CharAdvance, editor.Foldable(ws.Buf().LanguageOf())) + layout.XForIndex(col).AsF32() + 1
 	y := float32(ui.MenuBarHeight+ui.TabBarHeight) + (float32(line)+0.5)*ws.LineHeight
 	update(func(s *Workspace) { s.documentation = nil })
 	handle.Window.Draw()
@@ -429,7 +429,7 @@ func TestWorkspaceWithGopls(t *testing.T) {
 	line, col = ws.Buf().OffsetToLC(strings.Index(otherText, "Helper") + 2)
 	lineText = ws.Buf().Line(line)
 	layout = sys.LayoutLine(lineText, style.DefaultTextStyle().FontSize.ToPixels(handle.Window.RemSize()), []gptext.FontRun{{Len: len(lineText), FontID: fid}})
-	x = editor.GutterWidth(ws.Buf().LineCount(), ws.CharAdvance) + layout.XForIndex(col).AsF32() + 1
+	x = editor.GutterWidth(ws.Buf().LineCount(), ws.CharAdvance, editor.Foldable(ws.Buf().LanguageOf())) + layout.XForIndex(col).AsF32() + 1
 	y = float32(ui.MenuBarHeight+ui.TabBarHeight) + (float32(line)-ws.scrollF()+0.5)*ws.LineHeight
 	hw.DispatchInput(platform.MouseDownEvent{Button: platform.ButtonLeft, Position: geometry.PointPixels(x, y), Modifiers: keymap.Modifiers{Control: true}})
 	hw.DispatchInput(platform.MouseUpEvent{Button: platform.ButtonLeft, Position: geometry.PointPixels(x, y), Modifiers: keymap.Modifiers{Control: true}})

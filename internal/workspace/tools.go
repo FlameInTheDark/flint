@@ -38,6 +38,7 @@ type toolPanels struct {
 	outlineRevision        uint64
 	outline                []toolEntry
 	leftScroll, todoScroll *elements.ScrollHandle
+	leftTop, todoTop       float32
 }
 
 func (p *toolPanels) resetProject() {
@@ -175,7 +176,7 @@ func renderToolRail(ws *Workspace, t ui.Theme, update updateFn, project func(*gp
 	rail := elements.NewDiv().Flex().FlexCol().W(ui.Px(toolRailWidth)).H(ui.Px(height)).FlexShrink(0).MinH_0().OverflowYScroll().Py(ui.DefPx(edge)).BgColor(t.Crust).BorderR_1().BorderColor(t.Surface1)
 	icon := func(id, label string, active bool, run func(*gpui.Window)) *elements.Div {
 		color := t.Dim
-		b := elements.NewDiv().ID(elements.ButtonID("tool-" + id)).Flex().FlexShrink(0).ItemsCenter().JustifyCenter().W(ui.Px(buttonSize)).H(ui.Px(buttonSize)).Rounded(ui.AbsPx(5)).Tooltip(label).CursorPointer().
+		b := elements.NewDiv().ID(elements.ButtonID("tool-" + id)).Flex().FlexShrink(0).ItemsCenter().JustifyCenter().W(ui.Px(buttonSize)).H(ui.Px(buttonSize)).Rounded(ui.AbsPx(5)).TooltipBuilder(ui.Tooltip(label)).CursorPointer().
 			Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface2) }).OnClick(func(_ gpui.ClickEvent, w *gpui.Window) { run(w); w.Refresh() })
 		if active {
 			b.BgColor(t.Surface2)
@@ -218,10 +219,14 @@ func renderLeftTool(ws *Workspace, t ui.Theme, update updateFn) gpui.Element {
 	if kind == "git" {
 		panel = renderGitPanel(ws, t, update)
 	} else {
-		panel = renderToolList(ws, t, update, kind, "Structure", ws.outline(), ws.tools.leftScroll, nil, func(*gpui.Window) { update(func(s *Workspace) { s.tools.left = "" }) })
+		panel = renderToolList(ws, t, update, kind, "Structure", ws.outline(), ws.tools.leftScroll, &ws.tools.leftTop, nil, func(*gpui.Window) { update(func(s *Workspace) { s.tools.left = "" }) })
 	}
 	panel.Relative().FlexShrink(0).W(ui.Px(ws.effectiveTreeWidth())).BorderR_1().BorderColor(t.Surface1)
+	// The resize grip rides the panel's inner edge (the project tree's
+	// grip twin): dragging it re-anchors the shared left-panel width. The
+	// hover highlight makes the grip discoverable like the dock strips.
 	panel.Child(elements.NewDiv().ID(elements.ButtonID("tool-left-resize")).Absolute().Right(ui.Px(0)).Top(ui.Px(0)).Bottom(ui.Px(0)).W(ui.Px(4)).CursorColResize().
+		Hover(func(s *style.StyleRefinement) { s.BgColor(t.Accent.Alpha(0.45)) }).
 		OnMouseDown(func(ev platform.MouseDownEvent, w *gpui.Window) {
 			if ev.Button == platform.ButtonLeft {
 				if hb, ok := w.ListenerHitbox(); ok {
@@ -235,7 +240,7 @@ func renderLeftTool(ws *Workspace, t ui.Theme, update updateFn) gpui.Element {
 			w.Refresh()
 			w.StopPropagation()
 		}
-	}).OnMouseUp(func(_ platform.MouseUpEvent, w *gpui.Window) { w.ReleasePointer() }))
+	}).OnMouseUp(func(_ platform.MouseUpEvent, w *gpui.Window) { w.ReleasePointer(); w.Refresh() }))
 	return panel
 }
 
@@ -244,14 +249,22 @@ func renderTodos(ws *Workspace, t ui.Theme, update updateFn) gpui.Element {
 	if load := ws.tools.todos; load != nil {
 		result = load.result
 	}
-	return renderToolList(ws, t, update, "todo", "TODOs", result, ws.tools.todoScroll,
-		func(w *gpui.Window) { update(func(s *Workspace) { s.startToolLoad("todo", update, w) }) },
-		func(*gpui.Window) { update(func(s *Workspace) { s.ShowTodos = false }) }).H(ui.Px(ws.effectiveTermHeight())).FlexShrink(0).BorderT_1().BorderColor(t.Surface1)
+	persistScroll(ws.tools.todoScroll, &ws.tools.todoTop)
+	return elements.NewDiv().ID(elements.ButtonID("todos-panel")).Flex().FlexCol().H(ui.Px(ws.effectiveTermHeight())).FlexShrink(0).BgColor(t.EditorBg).BorderT_1().BorderColor(t.Surface1).
+		// Shared dock resize strip: dragging the top edge re-anchors the
+		// bottom dock's height (the terminal dock's edge behavior).
+		Child(renderDockResize("todos-resize", t, func(y float32, w *gpui.Window) {
+			update(func(s *Workspace) { s.SetTermHeight(y) })
+			w.Refresh()
+		})).
+		Child(renderToolList(ws, t, update, "todo", "TODOs", result, ws.tools.todoScroll, &ws.tools.todoTop,
+			func(w *gpui.Window) { update(func(s *Workspace) { s.startToolLoad("todo", update, w) }) },
+			func(*gpui.Window) { update(func(s *Workspace) { s.ShowTodos = false }) }).Flex1().MinH_0())
 }
 
-func renderToolList(ws *Workspace, t ui.Theme, update updateFn, kind, title string, result toolResult, scroll *elements.ScrollHandle, refresh, close func(*gpui.Window)) *elements.Div {
+func renderToolList(ws *Workspace, t ui.Theme, update updateFn, kind, title string, result toolResult, scroll *elements.ScrollHandle, stored *float32, refresh, close func(*gpui.Window)) *elements.Div {
 	button := func(icon, label string, run func(*gpui.Window)) *elements.Div {
-		return elements.NewDiv().ID(elements.ButtonID(kind + "-" + icon)).Flex().FlexShrink(0).ItemsCenter().JustifyCenter().W(ui.Px(23)).H(ui.Px(23)).Rounded(ui.AbsPx(4)).CursorPointer().Tooltip(label).
+		return elements.NewDiv().ID(elements.ButtonID(kind + "-" + icon)).Flex().FlexShrink(0).ItemsCenter().JustifyCenter().W(ui.Px(23)).H(ui.Px(23)).Rounded(ui.AbsPx(4)).CursorPointer().TooltipBuilder(ui.Tooltip(label)).
 			Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface2) }).Child(ui.ToolbarIcon(icon, t.Dim)).OnClick(func(_ gpui.ClickEvent, w *gpui.Window) { run(w); w.Refresh() })
 	}
 	header := elements.NewDiv().Flex().ItemsCenter().H(ui.Px(32)).FlexShrink(0).Gap(ui.DefPx(3)).Px(ui.DefPx(8)).BgColor(t.Surface).BorderB_1().BorderColor(t.Surface1).
@@ -260,7 +273,7 @@ func renderToolList(ws *Workspace, t ui.Theme, update updateFn, kind, title stri
 		header.Child(button("refresh", "Refresh "+title, refresh))
 	}
 	header.Child(button("close", "Hide "+title, close))
-	list := debugList(kind+"-list", scroll, nil)
+	list := debugList(kind+"-list", scroll, nil, stored)
 	list.Child(debugRow(result.info, t.Dim))
 	for i, entry := range result.entries {
 		label := entry.label

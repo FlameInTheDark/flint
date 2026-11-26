@@ -238,12 +238,15 @@ func (ws *Workspace) moveToSourceLine(lineNo, column int) {
 func renderGoOutput(ws *Workspace, t ui.Theme, update updateFn, w *gpui.Window) gpui.Element {
 	snap := ws.GoTask.Snapshot()
 	h := ws.goOutputScroll
+	if !ws.goOutputFollow {
+		persistScroll(h, &ws.goOutputTop)
+	}
 	header := elements.NewDiv().Flex().ItemsCenter().H(ui.Px(32)).FlexShrink(0).Px(ui.DefPx(12)).Gap(ui.DefPx(8)).BgColor(t.Surface).BorderB_1().BorderColor(t.Surface1).
 		Child(elements.NewText(snap.Spec.Label).WithTextColor(t.Text)).Child(elements.NewText("· " + snap.Status).WithTextColor(t.Dim)).Child(elements.NewDiv().FlexGrow(1))
 	if snap.Running {
 		header = header.Child(elements.NewDiv().ID(elements.ButtonID("go-task-stop")).CursorPointer().Px(ui.DefPx(8)).Rounded(ui.AbsPx(4)).Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface2) }).OnClick(func(_ gpui.ClickEvent, w *gpui.Window) { ws.startGoAction(goStop, update, w) }).Child(elements.NewText("Stop").WithTextColor(t.Red)))
 	}
-	header = header.Child(elements.NewDiv().ID(elements.ButtonID("go-output-close")).Tooltip("Hide Go output").CursorPointer().Px(ui.DefPx(8)).Rounded(ui.AbsPx(4)).Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface2) }).OnClick(func(_ gpui.ClickEvent, w *gpui.Window) {
+	header = header.Child(elements.NewDiv().ID(elements.ButtonID("go-output-close")).TooltipBuilder(ui.Tooltip("Hide Go output")).CursorPointer().Px(ui.DefPx(8)).Rounded(ui.AbsPx(4)).Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface2) }).OnClick(func(_ gpui.ClickEvent, w *gpui.Window) {
 		update(func(s *Workspace) { s.ShowGoOutput = false })
 		w.Focus(ws.FocusEditor)
 		w.Refresh()
@@ -255,6 +258,7 @@ func renderGoOutput(ws *Workspace, t ui.Theme, update updateFn, w *gpui.Window) 
 				update(func(s *Workspace) { s.goOutputFollow = false })
 				h.StopAutoscroll()
 				h.ScrollTopBy(-dy)
+				ws.goOutputTop = max(0, ws.goOutputTop-dy)
 				w.StopPropagation()
 				w.Refresh()
 			}
@@ -279,7 +283,14 @@ func renderGoOutput(ws *Workspace, t ui.Theme, update updateFn, w *gpui.Window) 
 		}
 		body = body.Child(row.Child(ui.MonoText(line, textColor)))
 	}
-	panel := elements.NewDiv().Flex().FlexCol().H(ui.Px(ws.effectiveTermHeight())).FlexShrink(0).BgColor(t.EditorBg).BorderT_1().BorderColor(t.Surface1).Child(header).Child(body)
+	panel := elements.NewDiv().ID(elements.ButtonID("go-output-panel")).Flex().FlexCol().H(ui.Px(ws.effectiveTermHeight())).FlexShrink(0).BgColor(t.EditorBg).BorderT_1().BorderColor(t.Surface1).
+		// Shared dock resize strip: dragging the top edge re-anchors
+		// the bottom dock's height (the terminal dock's edge behavior).
+		Child(renderDockResize("go-output-resize", t, func(y float32, w *gpui.Window) {
+			update(func(s *Workspace) { s.SetTermHeight(y) })
+			w.Refresh()
+		})).
+		Child(header).Child(body)
 	if snap.Spec.Interactive && snap.Running {
 		input := ui.RenderInput(ui.InputConfig{
 			State: &ws.goInput, Theme: t, Placeholder: "Program input…", Focus: ws.FocusGoInput,

@@ -153,7 +153,7 @@ func MenuDefs(update updateFn, w *gpui.Window, quit func(), ws *Workspace) []ui.
 				{Label: "About", Action: func() {
 					w.Prompt(gpui.PromptLevelInfo, "Flint",
 						"A upstream-style code editor built on the pure-Go gpui port.",
-						"Prompts, zoom, menus, terminal and the debug overlay are live.",
+						"Build "+BuildVersion,
 						[]gpui.PromptAction{{Label: "OK"}})
 				}},
 			}
@@ -259,6 +259,9 @@ func EditorContextItems(update updateFn, w *gpui.Window, ws *Workspace) []ui.Men
 				return nil
 			})
 		})},
+		{Separator: true},
+		{Label: "Fold All", Action: act(func(ws *Workspace) { ws.Edit(func(b *editor.Buffer) { b.FoldAll() }) })},
+		{Label: "Unfold All", Action: act(func(ws *Workspace) { ws.Edit(func(b *editor.Buffer) { b.UnfoldAll() }) })},
 	}
 }
 

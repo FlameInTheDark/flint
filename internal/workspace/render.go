@@ -165,7 +165,7 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 			}
 		}
 	}
-	menuBar := ui.RenderMenuBar(ui.MenuBarConfig{
+	menuCfg := ui.MenuBarConfig{
 		Menus:       menus,
 		State:       &ws.Menu,
 		Theme:       t,
@@ -196,7 +196,8 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 		Update:  func(f func(*ui.MenuState)) { update(func(s *Workspace) { f(&s.Menu) }) },
 		OnOpen:  openMenu,
 		OnClose: closePopup,
-	})
+	}
+	menuBar := ui.RenderMenuBar(menuCfg)
 
 	// -----------------------------------------------------------------------
 	// Tab bar
@@ -227,7 +228,7 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 				w.Refresh()
 			}
 		})
-	tabBar := elements.NewDiv().Flex().ItemsStretch().H(ui.Px(ui.TabBarHeight)).
+	tabBar := elements.NewDiv().ID(ui.StructID("tab-bar")).Flex().ItemsStretch().H(ui.Px(ui.TabBarHeight)).
 		FlexShrink(0). // fixed chrome never yields its height to content overflow
 		BgColor(t.Crust).BorderB_1().BorderColor(t.Surface1).
 		Child(tabsRow)
@@ -242,7 +243,6 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 			labelColor = t.Text
 			tabBg = t.EditorBg
 		}
-		fileColor := uiColorFor(buf.Name, t)
 
 		tab := elements.NewDiv().
 			ID(elements.ButtonID("tab-" + buf.Name)).
@@ -260,7 +260,15 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 					s.BgColor(t.Surface1)
 				}
 			}).
-			OnClick(func(ev gpui.ClickEvent, w *gpui.Window) {
+			// Selecting a tab acts on mouse-down: the press is
+			// handled in the frame it landed on, so a redraw that
+			// restructures the tree mid-click (caret blink, output
+			// arriving) can never drop it — and it feels instant,
+			// like the browser/IDE tab strips.
+			OnMouseDown(func(ev platform.MouseDownEvent, w *gpui.Window) {
+				if ev.Button != platform.ButtonLeft {
+					return
+				}
 				redraw(func(state *Workspace) {
 					if state.Active != idx {
 						state.completion = nil
@@ -279,7 +287,7 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 			tab = tab.BorderColor(t.Accent)
 		}
 
-		tab = tab.Child(ui.FileIcon(fileColor))
+		tab = tab.Child(ui.FileTypeIcon(buf.Name, t))
 		tab = tab.Child(elements.NewDiv().W(ui.Px(6)))
 		tab = tab.Child(elements.NewText(buf.Name).WithTextColor(labelColor))
 		// An unmistakable unsaved marker stays visible even on inactive tabs.
@@ -288,7 +296,7 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 		}
 		close := elements.NewDiv().
 			ID(elements.ButtonID("close-" + buf.Name)).
-			Tooltip("Close " + buf.Name).
+			TooltipBuilder(ui.Tooltip("Close " + buf.Name)).
 			Flex().ItemsCenter().JustifyCenter().
 			W(ui.Px(18)).H(ui.Px(18)).Rounded(ui.AbsPx(4)).
 			CursorPointer().
@@ -537,6 +545,9 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 					OnScroll: func(delta int) {
 						update(func(state *Workspace) { state.setScroll(state.scroll() + delta) })
 					},
+					OnScrollTo: func(line int) {
+						update(func(state *Workspace) { state.setScroll(line) })
+					},
 					OnWheelScroll: func(deltaF float32) {
 						update(func(state *Workspace) { state.addScrollDelta(deltaF) })
 					},
@@ -712,14 +723,14 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 	// -----------------------------------------------------------------------
 	// Assembly
 	// -----------------------------------------------------------------------
-	mainRow := elements.NewDiv().Flex().FlexBasis(ui.Px(0)).FlexGrow(1)
+	mainRow := elements.NewDiv().ID(ui.StructID("main-row")).Flex().FlexBasis(ui.Px(0)).FlexGrow(1)
 	if ws.tools.rail {
 		mainRow.Child(renderToolRail(ws, t, update, toggleProject))
 	}
 	if treePanel != nil {
 		mainRow = mainRow.Child(treePanel)
 	}
-	editorCol := elements.NewDiv().Flex().FlexCol().FlexBasis(ui.Px(0)).FlexGrow(1).MinW_0().Child(tabBar)
+	editorCol := elements.NewDiv().ID(ui.StructID("editor-col")).Flex().FlexCol().FlexBasis(ui.Px(0)).FlexGrow(1).MinW_0().Child(tabBar)
 	if findBar != nil {
 		editorCol = editorCol.Child(findBar)
 	}
@@ -734,14 +745,14 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 		editorCol = editorCol.Child(renderProblems(ws, t, update))
 	}
 	if ws.ShowDebug {
-		editorCol = editorCol.Child(renderDebug(ws, debugSnap, t, update))
+		editorCol = editorCol.Child(renderDebug(ws, debugSnap, t, update, w))
 	}
 	if ws.ShowTodos {
 		editorCol.Child(renderTodos(ws, t, update))
 	}
 	mainRow = mainRow.Child(editorCol)
 
-	root := elements.NewDiv().Flex().FlexCol().FlexGrow(1).Relative().BgColor(t.EditorBg)
+	root := elements.NewDiv().ID(ui.StructID("root")).Flex().FlexCol().FlexGrow(1).Relative().BgColor(t.EditorBg)
 	// The custom title bar rides above the menu bar when the platform
 	// window runs client-side decorations.
 	if ws.CustomDecorations {
@@ -894,7 +905,7 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 	}
 
 	if ws.Popup != nil {
-		root = root.Children(ui.RenderPopupLayer(ui.PopupConfig{
+		popupCfg := ui.PopupConfig{
 			State:      ws.Popup,
 			Theme:      t,
 			WindowSize: winSize,
@@ -909,7 +920,16 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 			},
 			OnClose:      closePopup,
 			RestoreFocus: focusEditor,
-		})...)
+		}
+		// A top-level dropdown keeps the menu bar itself interactive:
+		// the hover strip rides above the dismiss layer so moving the
+		// pointer across the bar switches menus (and clicking a title
+		// toggles) without closing first — the standard IDE menu-bar
+		// behavior.
+		if ws.Menu.Open >= 0 {
+			popupCfg.MenuBarElement = ui.MenuHoverStrip(menuCfg, ws.TitleBarH, winW)
+		}
+		root = root.Children(ui.RenderPopupLayer(popupCfg)...)
 	}
 	if ws.CommandPalette != nil {
 		root = root.Children(RenderCommandPalette(ws.CommandPalette, t, ws.FocusCommand,
@@ -989,8 +1009,6 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 
 // projectLabel was the menu-bar project name; the label is retired (the
 // window title carries the project) and the helper is gone with it.
-
-func uiColorFor(name string, t ui.Theme) gc.Hsla { return treeFileColor(name, t) }
 
 // wireTerminalRedraw is called before the pane can start its shell. Both
 // PTY reader and waiter can fire OnOutput from a worker. Only queue a draw
@@ -1708,7 +1726,7 @@ func renderTitleBar(ws *Workspace, t ui.Theme, w *gpui.Window) gpui.Element {
 	winButton := func(name, glyph, tip string, hover gc.Hsla, onClick func(w *gpui.Window)) gpui.Element {
 		return elements.NewDiv().
 			ID(elements.ButtonID("title-" + name)).
-			Tooltip(tip).
+			TooltipBuilder(ui.Tooltip(tip)).
 			Flex().ItemsCenter().JustifyCenter().
 			W(ui.Px(ui.TitleBarButtonW)).H(ui.Px(ws.TitleBarH - 2)).
 			CursorPointer().

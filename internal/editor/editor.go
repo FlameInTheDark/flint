@@ -128,6 +128,8 @@ type PaneConfig struct {
 	// OnScroll scrolls by whole lines (positive = down). Snap paths:
 	// minimap/scrollbar seeks and caret scrolling land exactly.
 	OnScroll func(delta int)
+	// OnScrollTo seeks to an absolute line, independent of the last frame.
+	OnScrollTo func(line int)
 	// OnWheelScroll applies a raw wheel delta (fractional rows) through
 	// the workspace's smooth-scroll ease. When nil the pane falls back
 	// to OnScroll with the delta truncated to rows.
@@ -169,35 +171,72 @@ const (
 	maxMinimapRunsPerLine = 14
 )
 
-// highlightCache memoizes Highlight per (lang, line text, palette): the code
-// pane and minimap share the runs when computing geometry. Keys carry the language so the
-// same text highlights differently per file type. The cache resets wholesale
-// when it grows past the cap (edits introduce new line texts; re-warming is
-// cheap because only visible lines are highlighted).
+// The highlight cache memoizes Highlight per (lang, line, context,
+// palette): the code pane and minimap share the runs when computing
+// geometry. Keys carry the language and the line's starting context (a
+// raw string or block comment carried over from the previous lines) so
+// the same text highlights differently per file type and per position.
+//
+// Entries age in two generations. When the current generation fills, it
+// becomes the previous one and a fresh map takes its place — a plain
+// clear-all emptied EVERY memoized line at once, and scrolling a long
+// file then re-tokenized hundreds of lines inside a single frame (the
+// minimap ring and the rows all missed together): periodic stutter that
+// grew with the document. The swap keeps the previous generation
+// reachable (a hit there promotes the entry into the current one), so
+// the working set of a steady scroll never falls off a cliff, while
+// memory stays bounded at twice the cap.
 type highlightKey struct {
 	lang, line string
 	palette    Palette
+	state      LineState
 }
 
-var highlightCache = map[highlightKey][]text.TextRun{}
+type highlightVal struct {
+	runs  []text.TextRun
+	state LineState // the context the next line starts in
+}
 
-// HighlightCached returns Highlight's runs, memoized per line text + lang.
+var (
+	highlightCachePrev = map[highlightKey]highlightVal{}
+	highlightCacheCur  = map[highlightKey]highlightVal{}
+)
+
+// highlightCacheCap caps one cache generation (x2 total across both).
+const highlightCacheCap = 16384
+
+// HighlightCached returns Highlight's runs, memoized per line text + lang
+// (top-of-file context).
 func HighlightCached(line, lang string, p Palette) []text.TextRun {
-	key := highlightKey{lang: lang, line: line, palette: p}
-	if runs, ok := highlightCache[key]; ok {
-		return runs
-	}
-	runs := Highlight(line, lang, p)
-	if len(highlightCache) >= 16384 {
-		highlightCache = map[highlightKey][]text.TextRun{}
-	}
-	highlightCache[key] = runs
+	runs, _ := HighlightCachedIn(line, lang, StateNormal, p)
 	return runs
 }
 
+// HighlightCachedIn is HighlightIn, memoized per (lang, line, context,
+// palette). The starting context is part of the key: identical line text
+// highlights differently inside a raw string than at the top level.
+func HighlightCachedIn(line, lang string, st LineState, p Palette) ([]text.TextRun, LineState) {
+	key := highlightKey{lang: lang, line: line, palette: p, state: st}
+	if v, ok := highlightCacheCur[key]; ok {
+		return v.runs, v.state
+	}
+	if v, ok := highlightCachePrev[key]; ok {
+		highlightCacheCur[key] = v // promote into the current generation
+		return v.runs, v.state
+	}
+	runs, end := HighlightIn(line, lang, st, p)
+	if len(highlightCacheCur) >= highlightCacheCap {
+		highlightCachePrev = highlightCacheCur
+		highlightCacheCur = map[highlightKey]highlightVal{}
+	}
+	highlightCacheCur[key] = highlightVal{runs: runs, state: end}
+	return runs, end
+}
+
 // GutterWidth returns the gutter's pixel width for a line count (the
-// workspace reuses it to size the code column).
-func GutterWidth(lines int, adv float32) float32 { return gutterWidth(lines, adv) }
+// workspace reuses it to size popups against the code column; folds adds
+// the fold-marker column).
+func GutterWidth(lines int, adv float32, folds bool) float32 { return gutterWidth(lines, adv, folds) }
 
 // GutterLeftInset is the gutter's left inset (logical px): the leftmost
 // digits - or the code text when line numbers are hidden - never touch the
@@ -209,18 +248,28 @@ const GutterLeftInset = 16.0
 // touches the numbers column and the two visually blend together.
 const GutterCodeGap = 16.0
 
+// FoldGutterW is the fold-marker column's width (the chevron buttons in
+// their own band left of the line numbers, like GoLand's fold gutter and
+// VS Code's glyph margin; added to the gutter only when the language can
+// fold).
+const FoldGutterW = 16.0
+
 // CodeDividerGap is the portion of GutterCodeGap on the code side of the
 // divider. Keeping it in the gutter's footprint leaves the text origin,
 // clipping and pointer-to-column mapping identical when horizontally panned.
 const CodeDividerGap = 6.0
 
 // gutterWidth returns the gutter's pixel width for a line count.
-func gutterWidth(lines int, adv float32) float32 {
+func gutterWidth(lines int, adv float32, folds bool) float32 {
 	digits := 1
 	for n := lines; n >= 10; n /= 10 {
 		digits++
 	}
-	return GutterLeftInset + float32(digits)*adv + GutterCodeGap
+	w := GutterLeftInset + float32(digits)*adv + GutterCodeGap
+	if folds {
+		w += FoldGutterW
+	}
+	return w
 }
 
 // absF is the float32 absolute value.
@@ -232,13 +281,13 @@ func absF(v float32) float32 {
 }
 
 // CodeViewportWidth is shared by the drawing and caret-reveal paths.
-func CodeViewportWidth(paneWidth float32, lineCount int, advance float32, gutter, minimap bool) float32 {
+func CodeViewportWidth(paneWidth float32, lineCount int, advance float32, gutter, minimap, folds bool) float32 {
 	width := paneWidth - 1
 	if minimap && paneWidth > 0 {
 		width -= RailWidth
 	}
 	if gutter {
-		width -= gutterWidth(lineCount, advance)
+		width -= gutterWidth(lineCount, advance, folds)
 	} else {
 		width -= GutterLeftInset
 	}
@@ -257,6 +306,34 @@ func maxScroll(totalLines, visible int) int {
 	return totalLines - visible
 }
 
+// MaxScrollF is the wheel ease's largest scroll TARGET in fractional rows:
+// the pixel-exact end of the document (VS Code's scrollBeyondLastLine=false).
+// The viewport is rarely a whole number of lines tall, so the whole-row
+// ceiling (maxScroll) overshoots it: resting there pins the document's last
+// line above the pane's bottom edge and strands the viewport's bottom slack
+// as a blank strip. The exact ceiling is total - viewportH/lineH — the last
+// line's bottom lands on the pane's bottom edge exactly, with the top row
+// partially scrolled out (the pane paints it; see the row budget below).
+// It never exceeds the whole-row ceiling by more than a row, and whole-row
+// seek paths (keys, caret, scrollbar) keep snapping to maxScroll.
+func MaxScrollF(totalLines, visible int, viewportH, lineH float32) float32 {
+	maxInt := float32(maxScroll(totalLines, visible))
+	if totalLines <= visible {
+		return maxInt
+	}
+	exact := float32(totalLines) - viewportH/lineH
+	if exact > maxInt {
+		exact = maxInt // a viewportH/lineH above ceil would lie; stay whole-row
+	}
+	if exact < maxInt-1 {
+		exact = maxInt - 1 // never more than one row below the whole-row ceiling
+	}
+	if exact < 0 {
+		exact = 0
+	}
+	return exact
+}
+
 // RenderPane renders the interactive code pane: gutter, virtualized rows,
 // selection, caret and the full editing keymap.
 func RenderPane(cfg PaneConfig) gpui.Element {
@@ -270,7 +347,10 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 	scroll := min(max(cfg.Scroll, 0), maxScroll(total, visible))
 	// The rendered position (fractional rows). At rest ScrollF == Scroll
 	// and frac is 0: the render is bit-identical to the integer path.
-	// Mid-ease the fractional part slides the window between rows.
+	// Mid-ease the fractional part slides the window between rows. The
+	// clamp stays on the whole-row ceiling: wheel targets stop earlier,
+	// at MaxScrollF (the pixel-exact document end), but caret and
+	// scrollbar seeks may legitimately render up to the last whole row.
 	scrollF := cfg.ScrollF
 	if scrollF < 0 {
 		scrollF = 0
@@ -281,7 +361,28 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 	firstF := float32(math.Floor(float64(scrollF)))
 	frac := scrollF - firstF
 	first := int(firstF)
-	gutterW := gutterWidth(total, m.CharAdvance)
+
+	// Folding: ranges for the language (nil when it cannot fold). A
+	// scroll that lands inside a collapsed region rests on the first
+	// line after it — the view never shows mid-fold.
+	lang, palette := buf.LanguageOf(), paletteOf(t)
+	buf.FoldRanges() // memoize + validate the folded set for this revision
+	foldable := Foldable(lang)
+	if foldable {
+		for {
+			f := buf.foldedRangeContaining(first)
+			if f == nil {
+				break
+			}
+			if f.End+1 >= total {
+				first = f.Start
+			} else {
+				first = f.End + 1
+			}
+		}
+	}
+
+	gutterW := gutterWidth(total, m.CharAdvance, foldable)
 	if !cfg.ShowGutter {
 		// Line numbers hidden: the gutter collapses to the left inset alone,
 		// so the code text keeps a small gap from the pane's left edge
@@ -289,10 +390,36 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 		// also kept drawing the numbers it was supposed to hide).
 		gutterW = GutterLeftInset
 	}
-	last := min(total-1, first+visible) // inclusive
 	shifted := frac > 0.0005
-	if shifted && last+1 <= total-1 {
-		last++ // the slide can reveal one more row at the bottom edge
+	// The painted rows: buffer lines from `first`, advancing through
+	// collapsed regions, up to the row budget. Without folds this is
+	// exactly the consecutive first..first+budget-1 range. The budget
+	// covers the partially visible bottom row whenever the viewport is
+	// not a whole number of lines tall: `visible` floors the height
+	// ratio, so the slack under the last full row holds the TOP of the
+	// next line, and every editor paints it. Skipping it culled a line
+	// that was still on screen — the bottom strip went blank as soon
+	// as a scroll settled ("the bottom line disappears too early").
+	// The fractional wheel slide can reveal one more row on top.
+	budget := visible
+	if slack := cfg.ViewportH - float32(visible)*lineH; slack > 0.5 {
+		budget++ // the partially visible bottom row
+	}
+	if shifted {
+		budget++ // the slide reveals one more row at the bottom edge
+	}
+	rows := make([]int, 0, budget)
+	for line, n := first, 0; line < total && n < budget; line = buf.NextVisible(line) {
+		rows = append(rows, line)
+		n++
+	}
+	if len(rows) == 0 && total > 0 {
+		rows = append(rows, min(first, total-1))
+	}
+	// Buffer line -> painted row index (the fold mapping for hit tests).
+	rowOf := make(map[int]int, len(rows))
+	for i, line := range rows {
+		rowOf[line] = i
 	}
 
 	// Local helpers operating through the update callback.
@@ -306,7 +433,7 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 	if cfg.ViewportW > 0 && cfg.ShowMinimap {
 		railW = RailWidth
 	}
-	codeW := CodeViewportWidth(cfg.ViewportW, total, m.CharAdvance, cfg.ShowGutter, cfg.ShowMinimap)
+	codeW := CodeViewportWidth(cfg.ViewportW, total, m.CharAdvance, cfg.ShowGutter, cfg.ShowMinimap, foldable)
 	contentW := CodeContentWidth(buf, m.CharAdvance, cfg.CaretLineWidth)
 	maxScrollX := contentW - codeW
 	if maxScrollX < 0 {
@@ -320,8 +447,10 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 		scrollX = maxScrollX
 	}
 
-	lang, palette := buf.LanguageOf(), paletteOf(t)
-	lines := make([]codeLine, max(0, last-first+1))
+	// Cross-line highlighting context per line (raw strings, block
+	// comments, triple quotes): memoized on the buffer per revision.
+	states := buf.LineStates(lang)
+	lines := make([]codeLine, len(rows))
 	// Use the laid-out rows, not viewport Y divided by a nominal height.
 	// Their actual positions include any fractional vertical pan and flex
 	// positioning that the frame used. Extrapolation is only for drags or
@@ -334,18 +463,24 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 			return y < w.ElementBounds(lines[i].row).Bottom()
 		})
 		if slot < len(lines) && y >= w.ElementBounds(lines[slot].row).Origin.Y {
-			return first + slot, true
+			return rows[slot], true
 		}
 		if !extrapolate {
 			return 0, false
 		}
+		// Dragging below the painted rows: walk the visible-line chain
+		// (fold-aware) from the first painted line.
 		startY := w.ElementBounds(lines[0].row).Origin.Y
-		row := first + int(math.Floor(float64((y-startY).AsF32()/lineH)))
+		idx := int(math.Floor(float64((y - startY).AsF32() / lineH)))
+		row := rows[0]
+		for k := 0; k < idx; k++ {
+			row = buf.NextVisible(row)
+		}
 		return min(max(row, 0), total-1), true
 	}
 	lineAt := func(line int, w *gpui.Window, fallbackX float32) (codeLine, *text.LineLayout, float32) {
-		if line >= first && line <= last {
-			l := lines[line-first]
+		if rowIdx, ok := rowOf[line]; ok {
+			l := lines[rowIdx]
 			if l.element != nil {
 				if shaped := l.element.Layout(); shaped != nil {
 					return l, shaped, w.ElementBounds(l.element).Origin.X.AsF32()
@@ -407,9 +542,14 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 		return buf.LCToOffset(line, byteCol), true
 	}
 
-	// scrollIntoView keeps the cursor's line visible.
+	// scrollIntoView keeps the cursor's line visible. Fold-aware: the
+	// caret's own painted row (if any) means it is already on screen —
+	// hidden lines above it must not trigger a scroll.
 	scrollIntoView := func() {
 		line, _ := buf.OffsetToLC(buf.Cursor)
+		if rowIdx, ok := rowOf[line]; ok && rowIdx < visible {
+			return
+		}
 		s := scroll
 		if line < s {
 			s = line
@@ -465,7 +605,7 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 			Flex().FlexCol().ItemsEnd()
 	}
 	if cfg.ShowGutter {
-		for i := first; i <= last; i++ {
+		for _, i := range rows {
 			numColor := t.Dim
 			cursorLine := cursorLine == i
 			if cursorLine {
@@ -494,7 +634,7 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 	if cfg.OnBreakpoint != nil || cfg.ExecutionLine > 0 {
 		gutter.Relative()
 		markers := elements.NewDiv().Absolute().Left(ui.Px(0)).Top(ui.Px(-frac * lineH)).W(ui.Px(GutterLeftInset)).Flex().FlexCol()
-		for i := first; i <= last; i++ {
+		for _, i := range rows {
 			marker := elements.NewDiv().H(ui.Px(lineH)).FlexShrink(0).Flex().ItemsCenter().JustifyCenter()
 			if cfg.OnBreakpoint != nil {
 				marker.CursorPointer().Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface2) })
@@ -511,6 +651,52 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 			markers.Child(marker)
 		}
 		gutter.Child(markers)
+	}
+	// Fold markers: chevron buttons in their own band LEFT of the line
+	// numbers (GoLand's fold gutter, VS Code's glyph margin). Headers show
+	// down/right chevrons; clicking toggles the region. The band sits
+	// between the breakpoint strip and the numbers, so a chevron never
+	// overlaps a digit and the hover highlight is a small rounded button
+	// around the glyph only — not a full-height strip.
+	if foldable && cfg.ShowGutter {
+		gutter.Relative()
+		foldLeft := float32(0)
+		if cfg.OnBreakpoint != nil || cfg.ExecutionLine > 0 {
+			foldLeft = GutterLeftInset // keep the breakpoint strip clear
+		}
+		foldCol := elements.NewDiv().
+			Absolute().Left(ui.Px(foldLeft)).Top(ui.Px(-frac * lineH)).
+			W(ui.Px(FoldGutterW)).Flex().FlexCol()
+		for _, i := range rows {
+			cell := elements.NewDiv().H(ui.Px(lineH)).FlexShrink(0).Flex().ItemsCenter().JustifyCenter()
+			if f, ok := buf.FoldAt(i); ok {
+				folded := buf.IsFolded(i)
+				icon, tip := "chevron-down", "Fold"
+				if folded {
+					icon, tip = "chevron-right", "Unfold"
+				}
+				start := f.Start
+				cell = cell.Child(elements.NewDiv().
+					W(ui.Px(FoldGutterW)).H(ui.Px(FoldGutterW)).
+					Rounded(ui.AbsPx(4)).
+					Flex().ItemsCenter().JustifyCenter().
+					ID(elements.ButtonID(fmt.Sprintf("fold-chev-%d", start))).
+					CursorPointer().
+					Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface1) }).
+					TooltipBuilder(ui.Tooltip(tip)).
+					OnMouseDown(func(ev platform.MouseDownEvent, w *gpui.Window) {
+						if ev.Button != platform.ButtonLeft {
+							return
+						}
+						edit(func(b *Buffer) { b.ToggleFold(start) })
+						w.StopPropagation()
+						w.Refresh()
+					}).
+					Child(ui.Icon(icon, t.Dim, 12)))
+			}
+			foldCol = foldCol.Child(cell)
+		}
+		gutter.Child(foldCol)
 	}
 	// Gutter clicks place the cursor at the clicked line's start (the code
 	// column's own handlers cover only the code area to their right);
@@ -573,7 +759,7 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 			Absolute().Left(ui.Px(0)).Top(ui.Px(-frac * lineH)).
 			Flex().FlexCol()
 	}
-	for i := first; i <= last; i++ {
+	for rowIdx, i := range rows {
 		lineText := buf.Line(i)
 		lineStart := buf.LineStart(i)
 		cursorLine := cursorLine == i
@@ -590,7 +776,11 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 
 		// Shaping and styling take byte indices in the tab-expanded text.
 		l := newCodeLine(lineText)
-		runs := HighlightCached(l.display, lang, palette)
+		startState := StateNormal
+		if i < len(states) {
+			startState = states[i]
+		}
+		runs, _ := HighlightCachedIn(l.display, lang, startState, palette)
 		if len(runs) == 0 && l.display == "" {
 			runs = []text.TextRun{{Len: 0, Font: mono(false), Color: t.Text}}
 		}
@@ -626,6 +816,33 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 			row = row.Child(textEl)
 		}
 
+		// Collapsed fold placeholder: GoLand's `{…}` inline summary
+		// (paren blocks show a bare `…`). Clicking it expands the
+		// region again, like every editor's ghost marker.
+		if f, ok := buf.FoldAt(i); ok && buf.IsFolded(i) {
+			ph := " {…}"
+			if f.Paren {
+				ph = " …"
+			}
+			start := f.Start
+			phEl := elements.NewDiv().
+				ID(elements.ButtonID(fmt.Sprintf("fold-ph-%d", start))).
+				Flex().ItemsCenter().CursorPointer().
+				TooltipBuilder(ui.Tooltip("Unfold")).
+				OnMouseDown(func(ev platform.MouseDownEvent, w *gpui.Window) {
+					if ev.Button != platform.ButtonLeft {
+						return
+					}
+					edit(func(b *Buffer) { b.Unfold(start) })
+					w.StopPropagation()
+					w.Refresh()
+				}).
+				Child(elements.NewText(ph).WithRuns([]text.TextRun{
+					{Len: len(ph), Font: mono(false), Color: t.Dim},
+				}))
+			row = row.Child(phEl)
+		}
+
 		// Caret. Two device-independent px wide so it survives rounding
 		// (a 1.5px bar rounds to a single faint pixel merged with the
 		// glyph's left bearing - effectively invisible). It blinks like
@@ -635,7 +852,7 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 			row = row.Child(l.caretOverlay(cursorCol(buf, lineStart), lineH, t.Accent))
 		}
 		l.row = row
-		lines[i-first] = l
+		lines[rowIdx] = l
 		if codeRows != nil {
 			codeRows = codeRows.Child(row)
 		} else {
@@ -679,6 +896,7 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 			Visible:       visible,
 			ScrollX:       scrollX,
 			OnScroll:      cfg.OnScroll,
+			OnScrollTo:    cfg.OnScrollTo,
 			OnWheelScroll: cfg.OnWheelScroll,
 			OnScrollX:     cfg.OnScrollX,
 			CursorLine:    cursorLine,
@@ -887,15 +1105,24 @@ type railConfig struct {
 	Scroll  int
 	// ScrollF is the rendered fractional scroll (the wheel ease) — the
 	// miniature's top offset and the thumb track it smoothly.
-	ScrollF  float32
-	Visible  int
-	ScrollX  float32
-	OnScroll func(delta int)
+	ScrollF    float32
+	Visible    int
+	ScrollX    float32
+	OnScroll   func(delta int)
+	OnScrollTo func(line int)
 	// OnWheelScroll, when set, carries the rail's wheel deltas through the
 	// smooth-scroll ease (drag seeks stay on the snapped OnScroll).
 	OnWheelScroll func(deltaF float32)
 	OnScrollX     func(deltaPx float32)
 	CursorLine    int
+}
+
+func (cfg railConfig) seek(target int) {
+	if cfg.OnScrollTo != nil {
+		cfg.OnScrollTo(target)
+	} else if cfg.OnScroll != nil {
+		cfg.OnScroll(target - cfg.Scroll)
+	}
 }
 
 // renderRail builds the right rail: a code map with a viewport indicator,
@@ -912,8 +1139,8 @@ type railConfig struct {
 // (ScrollbarLayout::for_minimap), so it covers exactly the miniature rows
 // of the visible code — for a fitting document it sits right on those
 // rows; for a taller one it sweeps the rail while the content slides
-// underneath. The click/drag mapping stays anchored to the rail, so
-// seeking remains stable across the whole document.
+// underneath. Clicking selects a visible miniature row; dragging remains
+// anchored to the initial click while navigating the whole document.
 func renderRail(cfg railConfig) gpui.Element {
 	t := cfg.Theme
 	buf := cfg.Buf
@@ -939,47 +1166,40 @@ func renderRail(cfg railConfig) gpui.Element {
 		contentTopF = progress * float32(max(0, total-minimapLines))
 	}
 
-	// seekMinimap inverts the thumb mapping (thumb top = (scroll -
-	// contentTop) * miniH): a click/drag under the rail lands the clicked
-	// code region under the viewport thumb.
-	seekMinimap := func(localY float32) {
-		if cfg.OnScroll == nil || maxScrollLines <= 0 {
+	// A click selects the line actually painted under the pointer, not a
+	// percentage of the entire file. The miniature is a sliding window.
+	clickMinimap := func(localY float32) {
+		if (cfg.OnScroll == nil && cfg.OnScrollTo == nil) || maxScrollLines <= 0 {
 			return
 		}
-		indH := float32(cfg.Visible) * miniH
-		if indH < 2 {
-			indH = 2
-		}
-		travel := cfg.Height - indH
-		if travel <= 0 {
+		if cfg.Height <= 0 {
 			return
 		}
-		want := localY - indH/2
-		if want < 0 {
-			want = 0
+		localY = min(max(localY, 0), cfg.Height)
+		line := min(contentTopF+localY/miniH, float32(total-1))
+		target := min(max(line-float32(cfg.Visible)/2, 0), float32(maxScrollLines))
+		buf.minimapDrag = minimapDragState{active: true, y: localY, target: target}
+		cfg.seek(int(target))
+	}
+	// The minimap slides as the editor moves. Anchor each drag at its
+	// original click, so a stationary pointer does not drift as it slides.
+	// Each side of the anchor maps to the corresponding document endpoint.
+	dragMinimap := func(localY float32) {
+		drag := buf.minimapDrag
+		if !drag.active || cfg.Height <= 0 {
+			return
 		}
-		if want > travel {
-			want = travel
+		localY = min(max(localY, 0), cfg.Height)
+		target := drag.target
+		if total <= minimapLines {
+			// When the whole file fits, the miniature does not slide.
+			target += (localY - drag.y) / miniH
+		} else if localY < drag.y && drag.y > 0 {
+			target *= localY / drag.y
+		} else if localY > drag.y && drag.y < cfg.Height {
+			target += (float32(maxScrollLines) - target) * (localY - drag.y) / (cfg.Height - drag.y)
 		}
-		var target float32
-		if total > minimapLines {
-			// The miniature slides underneath; undo both motions.
-			denom := float32(minimapLines - cfg.Visible)
-			if denom < 1 {
-				denom = 1
-			}
-			target = (want / miniH) * float32(maxScrollLines) / denom
-		} else {
-			// The whole document fits the rail: thumb top = scroll * miniH.
-			target = want / miniH
-		}
-		if target < 0 {
-			target = 0
-		}
-		if target > float32(maxScrollLines) {
-			target = float32(maxScrollLines)
-		}
-		cfg.OnScroll(int(target) - cfg.Scroll)
+		cfg.seek(int(min(max(target, 0), float32(maxScrollLines))))
 	}
 
 	cacheKey := minimapKey{revision: buf.Revision, language: buf.LanguageOf(), palette: paletteOf(t), dim: t.Dim,
@@ -994,7 +1214,7 @@ func renderRail(cfg railConfig) gpui.Element {
 				return
 			}
 			if hb, ok := w.ListenerHitbox(); ok {
-				seekMinimap(ev.Position.Y.AsF32() - float32(hb.Bounds.Origin.Y))
+				clickMinimap(ev.Position.Y.AsF32() - float32(hb.Bounds.Origin.Y))
 				// Capture the pointer for the whole drag: moves keep
 				// matching this hitbox even off the minimap, and the
 				// editor pane's drag-select listener is suppressed by
@@ -1009,12 +1229,13 @@ func renderRail(cfg railConfig) gpui.Element {
 				return
 			}
 			if hb, ok := w.ListenerHitbox(); ok {
-				seekMinimap(ev.Position.Y.AsF32() - float32(hb.Bounds.Origin.Y))
+				dragMinimap(ev.Position.Y.AsF32() - float32(hb.Bounds.Origin.Y))
 			}
 			w.StopPropagation()
 			w.Refresh()
 		}).
 		OnMouseUp(func(ev platform.MouseUpEvent, w *gpui.Window) {
+			buf.minimapDrag.active = false
 			w.ReleasePointer()
 			w.Refresh()
 		}).
@@ -1083,6 +1304,22 @@ func renderRail(cfg railConfig) gpui.Element {
 			if rowY > cfg.Height {
 				break
 			}
+			if buf.foldFolded[i] {
+				// Collapsed region: a dim band stands in for the
+				// hidden lines (nothing else paints on them).
+				st := style.Style{Background: &gc.Background{
+					Tag:   gc.BackgroundTagSolid,
+					Solid: t.Dim.Alpha(0.35),
+				}}
+				b := bounds
+				b.Origin.Y = b.Origin.Y.Add(geometry.Px(rowY))
+				b.Size = geometry.Size[geometry.Pixels]{Width: geometry.Px(MinimapWidth - 4), Height: geometry.Px(min(MinimapBlockH, miniH))}
+				w.PaintQuad(st, b)
+				continue
+			}
+			if buf.foldedRangeContaining(i) != nil {
+				continue
+			}
 			if i == cfg.CursorLine {
 				// Cursor-line strip behind the token blocks.
 				st := style.Style{Background: &gc.Background{
@@ -1123,7 +1360,7 @@ func renderRail(cfg railConfig) gpui.Element {
 		thumbTop = (min(max(cfg.ScrollF, 0), float32(maxScrollLines)) / float32(maxScrollLines)) * travel
 	}
 	seekV := func(localY float32) {
-		if travel <= 0 || cfg.OnScroll == nil {
+		if travel <= 0 || (cfg.OnScroll == nil && cfg.OnScrollTo == nil) {
 			return
 		}
 		ratio := (localY - thumbH/2) / travel
@@ -1133,7 +1370,7 @@ func renderRail(cfg railConfig) gpui.Element {
 		if ratio > 1 {
 			ratio = 1
 		}
-		cfg.OnScroll(int(ratio*float32(maxScrollLines)) - cfg.Scroll)
+		cfg.seek(int(ratio * float32(maxScrollLines)))
 	}
 	vscroll := elements.NewDiv().
 		ID(elements.ButtonID("vscroll")).
@@ -1224,22 +1461,22 @@ func handlePaneKey(cfg PaneConfig, buf *Buffer, edit func(func(*Buffer)),
 			return
 		case "v":
 			if item, ok := w.PlatformWindow().ReadClipboard(); ok && item.Text != "" {
-				edit(func(b *Buffer) { b.Insert(item.Text) })
+				edit(func(b *Buffer) { b.Insert(item.Text); b.UnfoldAtCursor() })
 				scrollIntoView()
 				w.Refresh()
 			}
 			return
 		case "z":
 			if mods.Shift {
-				edit(func(b *Buffer) { b.Redo() })
+				edit(func(b *Buffer) { b.Redo(); b.UnfoldAtCursor() })
 			} else {
-				edit(func(b *Buffer) { b.Undo() })
+				edit(func(b *Buffer) { b.Undo(); b.UnfoldAtCursor() })
 			}
 			scrollIntoView()
 			w.Refresh()
 			return
 		case "y":
-			edit(func(b *Buffer) { b.Redo() })
+			edit(func(b *Buffer) { b.Redo(); b.UnfoldAtCursor() })
 			scrollIntoView()
 			w.Refresh()
 			return
@@ -1267,23 +1504,26 @@ func handlePaneKey(cfg PaneConfig, buf *Buffer, edit func(func(*Buffer)),
 	switch key {
 	case "left", "right", "up", "down", "home", "end", "pageup", "pagedown":
 		word := secondary && (key == "left" || key == "right")
-		edit(func(b *Buffer) { b.Move(key, mods.Shift, word, visible-1) })
+		edit(func(b *Buffer) {
+			b.Move(key, mods.Shift, word, visible-1)
+			b.UnfoldAtCursor() // entering a folded region expands it
+		})
 		scrollIntoView()
 		w.Refresh()
 	case "backspace":
-		edit(func(b *Buffer) { b.DeleteBackward() })
+		edit(func(b *Buffer) { b.DeleteBackward(); b.UnfoldAtCursor() })
 		scrollIntoView()
 		w.Refresh()
 	case "delete":
-		edit(func(b *Buffer) { b.DeleteForward() })
+		edit(func(b *Buffer) { b.DeleteForward(); b.UnfoldAtCursor() })
 		scrollIntoView()
 		w.Refresh()
 	case "enter":
-		edit(func(b *Buffer) { b.Insert("\n") })
+		edit(func(b *Buffer) { b.Insert("\n"); b.UnfoldAtCursor() })
 		scrollIntoView()
 		w.Refresh()
 	case "tab":
-		edit(func(b *Buffer) { b.Insert("    ") })
+		edit(func(b *Buffer) { b.Insert("    "); b.UnfoldAtCursor() })
 		scrollIntoView()
 		w.Refresh()
 	case "escape":
@@ -1293,7 +1533,7 @@ func handlePaneKey(cfg PaneConfig, buf *Buffer, edit func(func(*Buffer)),
 		}
 	default:
 		if ch := k.KeyChar; ch != "" && !mods.Control && !mods.Alt && !mods.Platform {
-			edit(func(b *Buffer) { b.Insert(ch) })
+			edit(func(b *Buffer) { b.Insert(ch); b.UnfoldAtCursor() })
 			scrollIntoView()
 			w.Refresh()
 		}
@@ -1329,5 +1569,6 @@ func paletteOf(t ui.Theme) Palette {
 		Text:     t.Text,
 		Heading:  t.Accent,
 		Link:     t.Teal,
+		Todo:     t.Orange,
 	}
 }

@@ -76,7 +76,9 @@ type Workspace struct {
 	GoTask         *gotools.Task
 	goOutputScroll *elements.ScrollHandle
 	goOutputFollow bool
+	goOutputTop    float32
 	problemScroll  *elements.ScrollHandle
+	problemTop     float32
 	goInput        ui.InputState
 	debug          debugState
 	tools          toolPanels
@@ -446,6 +448,20 @@ func (ws *Workspace) maxScrollRows() int {
 	return max
 }
 
+// maxScrollRowsF is the wheel ease's largest scroll target in fractional
+// rows: the pixel-exact document end, where the last line's bottom rests
+// on the pane's bottom edge (editor.MaxScrollF). Whole-row seek paths
+// still snap to maxScrollRows (setScroll).
+func (ws *Workspace) maxScrollRowsF() float32 {
+	b := ws.Buf()
+	if b == nil {
+		return 0
+	}
+	paneH := ws.paneHeight()
+	visible := editor.Metrics{LineHeight: ws.LineHeight}.VisibleLines(paneH)
+	return editor.MaxScrollF(b.LineCount(), visible, paneH, ws.LineHeight)
+}
+
 // ensureScrollArrays keeps the per-buffer scroll slices parallel to Buffers.
 func (ws *Workspace) ensureScrollArrays() {
 	for len(ws.scrolls) < len(ws.Buffers) {
@@ -491,7 +507,7 @@ func (ws *Workspace) addScrollDelta(df float32) {
 	if ws.Buf() == nil {
 		return
 	}
-	maxF := float32(ws.maxScrollRows())
+	maxF := ws.maxScrollRowsF()
 	prev := ws.scrollF()
 	target := ws.scrolls[ws.Active] + df
 	if target < 0 {
@@ -655,7 +671,7 @@ func (ws *Workspace) maxScrollX() float32 {
 }
 
 func (ws *Workspace) codeViewportWidth(b *editor.Buffer) float32 {
-	return editor.CodeViewportWidth(ws.paneWidth(), b.LineCount(), ws.CharAdvance, ws.ShowLineNumbers, ws.Cfg.Editor.ShowMinimap)
+	return editor.CodeViewportWidth(ws.paneWidth(), b.LineCount(), ws.CharAdvance, ws.ShowLineNumbers, ws.Cfg.Editor.ShowMinimap, editor.Foldable(b.LanguageOf()))
 }
 
 // scrollCaretIntoViewX pans horizontally so the caret stays visible when

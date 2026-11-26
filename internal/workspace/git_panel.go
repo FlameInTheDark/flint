@@ -27,12 +27,24 @@ func renderGitPanel(ws *Workspace, t ui.Theme, update updateFn) *elements.Div {
 	label := func(value string, c gc.Hsla) *elements.Text { return elements.NewText(value).WithTextColor(c) }
 	button := func(id, text, tooltip string, run func(*gpui.Window)) *elements.Div {
 		el := elements.NewDiv().ID(elements.ButtonID("git-" + id)).H(ui.Px(25)).Flex().ItemsCenter().FlexShrink(0).
-			Px(ui.DefPx(5)).Rounded(ui.AbsPx(4)).BgColor(t.Surface1).Tooltip(tooltip)
+			Px(ui.DefPx(5)).Rounded(ui.AbsPx(4)).BgColor(t.Surface1).TooltipBuilder(ui.Tooltip(tooltip))
 		if run == nil {
 			return el.Child(label(text, t.Dim))
 		}
 		return el.CursorPointer().Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface2) }).
 			OnClick(func(_ gpui.ClickEvent, w *gpui.Window) { run(w); w.Refresh() }).Child(label(text, t.Text))
+	}
+	// iconButton is the row-action twin of button: a bare Lucide icon (plus
+	// to stage, minus to unstage — like the staged-diff +/- marks) that
+	// highlights on hover instead of sitting in a filled chip.
+	iconButton := func(id, icon, tooltip string, run func(*gpui.Window)) *elements.Div {
+		el := elements.NewDiv().ID(elements.ButtonID("git-" + id)).Flex().ItemsCenter().JustifyCenter().W(ui.Px(22)).H(ui.Px(25)).FlexShrink(0).
+			Rounded(ui.AbsPx(4)).TooltipBuilder(ui.Tooltip(tooltip))
+		if run == nil {
+			return el.Child(ui.Icon(icon, t.Overlay, 14))
+		}
+		return el.CursorPointer().Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface2) }).
+			OnClick(func(_ gpui.ClickEvent, w *gpui.Window) { run(w); w.Refresh() }).Child(ui.Icon(icon, t.Text, 14))
 	}
 	refresh := func(w *gpui.Window) {
 		update(func(s *Workspace) { s.tools.gitMessage = ""; s.startToolLoad("git", update, w) })
@@ -60,7 +72,7 @@ func renderGitPanel(ws *Workspace, t ui.Theme, update updateFn) *elements.Div {
 	header := elements.NewDiv().Flex().ItemsCenter().FlexShrink(0).BgColor(t.Surface).BorderB_1().BorderColor(t.Surface2).
 		Child(tab("changes", changesTitle, false)).Child(tab("history", "History", true)).
 		Child(button("refresh", "↻", "Refresh Git", refresh))
-	list := debugList("git-list", ws.tools.leftScroll, nil)
+	list := debugList("git-list", ws.tools.leftScroll, nil, &ws.tools.leftTop)
 	panel := elements.NewDiv().Flex().FlexCol().MinH_0().BgColor(t.EditorBg).TextSize(ui.AbsPx(12)).Child(header)
 	if busy {
 		list.Child(debugRow("Running Git…", t.Dim))
@@ -71,7 +83,7 @@ func renderGitPanel(ws *Workspace, t ui.Theme, update updateFn) *elements.Div {
 			col = t.Red
 		}
 		summary, _, _ := strings.Cut(msg, "\n")
-		list.Child(debugRow(summary, col).ID(elements.ButtonID("git-message")).Tooltip(strings.Join(strings.Fields(msg), " ")))
+		list.Child(debugRow(summary, col).ID(elements.ButtonID("git-message")).TooltipBuilder(ui.Tooltip(strings.Join(strings.Fields(msg), " "))))
 	}
 	if result.repo == "" {
 		return panel.Child(list.Child(debugRow(result.info, t.Dim)))
@@ -86,8 +98,10 @@ func renderGitPanel(ws *Workspace, t ui.Theme, update updateFn) *elements.Div {
 	}
 	branch := elements.NewDiv().Flex().ItemsCenter().FlexShrink(0).H(ui.Px(31)).Gap(ui.DefPx(4)).Px(ui.DefPx(6)).
 		BgColor(t.Surface).BorderT_1().BorderColor(t.Surface2).
-		Child(elements.NewDiv().Flex().ItemsCenter().MinW_0().Flex1().OverflowHidden().WhitespaceNowrap().Tooltip(result.info).
-			Child(label("⑂ "+result.branch, t.Dim)))
+		Child(elements.NewDiv().Flex().ItemsCenter().MinW_0().Flex1().OverflowHidden().WhitespaceNowrap().TooltipBuilder(ui.Tooltip(result.info)).
+			// The branch glyph rides a Lucide icon: the Unicode fork (⑂)
+			// comes from a fallback font whose line metrics clip the row.
+			Child(ui.Icon("git-branch", t.Dim, 13)).Child(label(result.branch, t.Dim)))
 	if !busy {
 		branch.Child(button("fetch", "Fetch", "Fetch remote changes without modifying files", func(w *gpui.Window) { run("fetch", "", w) })).
 			Child(button("push", "Push", "Push the current branch", func(w *gpui.Window) { run("push", "", w) }))
@@ -98,7 +112,7 @@ func renderGitPanel(ws *Workspace, t ui.Theme, update updateFn) *elements.Div {
 		}
 		for _, commit := range result.history {
 			list.Child(elements.NewDiv().Flex().FlexCol().FlexShrink(0).MinW_0().OverflowHidden().WhitespaceNowrap().
-				Py(ui.DefPx(5)).BorderB_1().BorderColor(t.Surface1).Tooltip(commit.subject).
+				Py(ui.DefPx(5)).BorderB_1().BorderColor(t.Surface1).TooltipBuilder(ui.Tooltip(commit.subject)).
 				Child(label(commit.subject, t.Text)).Child(label(commit.hash+"  ·  "+commit.date, t.Dim)))
 		}
 		return panel.Child(list).Child(branch)
@@ -167,7 +181,7 @@ func renderGitPanel(ws *Workspace, t ui.Theme, update updateFn) *elements.Div {
 				color = t.Red
 			}
 			path := elements.NewDiv().ID(elements.ButtonID("git-diff-" + id)).Flex1().MinW_0().H(ui.Px(27)).Flex().ItemsCenter().Gap(ui.DefPx(5)).
-				WhitespaceNowrap().OverflowHidden().CursorPointer().Tooltip(e.label + " · Open diff").
+				WhitespaceNowrap().OverflowHidden().CursorPointer().TooltipBuilder(ui.Tooltip(e.label + " · Open diff")).
 				Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface1) }).
 				Child(ui.MonoText(e.badge, color)).Child(label(filepath.Base(e.label), t.Text)).
 				OnClick(func(_ gpui.ClickEvent, w *gpui.Window) {
@@ -180,11 +194,11 @@ func renderGitPanel(ws *Workspace, t ui.Theme, update updateFn) *elements.Div {
 			}
 			row.Child(path).Child(stats(e.stat))
 			if !busy {
-				action, mark, tip := "stage", "□", "Stage file"
+				action, icon, tip := "stage", "plus", "Stage file"
 				if e.staged {
-					action, mark, tip = "unstage", "✓", "Unstage file"
+					action, icon, tip = "unstage", "minus", "Unstage file"
 				}
-				row.Child(button(action+"-"+id, mark, tip, func(w *gpui.Window) { run(action, e.label, w) }).W(ui.Px(22)).JustifyCenter())
+				row.Child(iconButton(action+"-"+id, icon, tip, func(w *gpui.Window) { run(action, e.label, w) }))
 			}
 			list.Child(row)
 		}

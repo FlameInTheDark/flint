@@ -47,10 +47,8 @@ func visibleLinesOf(handle *gpui.WindowHandle[workspace.Workspace], cx *app.App)
 	return editor.Metrics{LineHeight: ws.LineHeight}.VisibleLines(ws.DebugPaneHeight())
 }
 
-// TestMinimapDragMapsWholeFile drives the minimap like a scrollbar: clicks
-// at fractions of the rail and drags end to end, asserting the whole
-// document is reachable with a stable, monotonic mapping (the old sliding
-// window got stuck mid-drag and jumped past the middle).
+// TestMinimapDragMapsWholeFile checks a drag stays anchored to its initial
+// click while reaching both ends of the document.
 func TestMinimapDragMapsWholeFile(t *testing.T) {
 	var sb strings.Builder
 	for i := 0; i < 400; i++ {
@@ -60,77 +58,40 @@ func TestMinimapDragMapsWholeFile(t *testing.T) {
 	hw := hp.LastWindow()
 	mm := findMinimap(t, handle)
 	visible := visibleLinesOf(handle, cx)
-	maxScroll := 400 - visible
+	maxScroll := handle.View.Read(cx).Buf().LineCount() - visible
 	if maxScroll <= 0 {
 		t.Fatalf("test needs a scrollable document (visible=%d)", visible)
 	}
 
-	// Expected line for a click at frac of the rail: the viewport indicator
-	// centers on the pointer (scrollbar jump-to-click semantics). The
-	// indicator height is the viewport at the CONSTANT miniature scale
-	// (MinimapLineHeight per line — the upstream editor's minimap never compresses).
-	indH := float32(visible) * editor.MinimapLineHeight
-	if indH < 2 {
-		indH = 2
-	}
-	targetAt := func(frac float32) int {
-		travel := mm.h - indH
-		ratio := (frac*mm.h - indH/2) / travel
-		if ratio < 0 {
-			ratio = 0
-		}
-		if ratio > 1 {
-			ratio = 1
-		}
-		return int(ratio * float32(maxScroll))
-	}
 	line := func() int { l, _ := handle.View.Read(cx).DebugScrollState(); return l }
-
-	clickFrac := func(frac float32) int {
-		pos := geometry.PointPixels(mm.x+mm.w/2, mm.y+frac*mm.h)
-		hw.DispatchInput(platform.MouseDownEvent{Button: platform.ButtonLeft, Position: pos})
-		l, _ := handle.View.Read(cx).DebugScrollState()
-		hw.DispatchInput(platform.MouseUpEvent{Button: platform.ButtonLeft, Position: pos})
-		return l
+	point := func(frac float32) geometry.Point[geometry.Pixels] {
+		return geometry.PointPixels(mm.x+mm.w/2, mm.y+frac*mm.h)
 	}
-	// The mapping is stable: clicking the same spot twice lands on the same
-	// line (the old mapping moved the window under the cursor, so a second
-	// click drifted).
-	first := clickFrac(0.5)
-	second := clickFrac(0.5)
-	if absi(first-second) > 2 {
-		t.Fatalf("minimap mapping is unstable: click 50%% -> %d then %d", first, second)
-	}
-	if absi(first-targetAt(0.5)) > 4 {
-		t.Fatalf("click at 50%% landed on line %d, want ~%d (indicator-centered mapping)", first, targetAt(0.5))
-	}
-
-	// Drag from 25% to 75%: the scroll tracks the cursor monotonically
-	// through the middle (no sticking at the window re-center point).
-	start := clickFrac(0.25)
-	if absi(start-targetAt(0.25)) > 4 {
-		t.Fatalf("click at 25%% landed on line %d, want ~%d", start, targetAt(0.25))
-	}
+	hw.DispatchInput(platform.MouseDownEvent{Button: platform.ButtonLeft, Position: point(0.25)})
+	start := line()
 	prev := start
 	for step := 0; step <= 10; step++ {
 		frac := 0.25 + 0.05*float32(step)
-		pos := geometry.PointPixels(mm.x+mm.w/2, mm.y+frac*mm.h)
-		hw.DispatchInput(platform.MouseMoveEvent{Position: pos, PressedButton: btnPtr(platform.ButtonLeft)})
+		hw.DispatchInput(platform.MouseMoveEvent{Position: point(frac), PressedButton: btnPtr(platform.ButtonLeft)})
 		cur := line()
 		if cur < prev-2 {
 			t.Fatalf("minimap drag went backwards at %.2f: %d after %d", frac, cur, prev)
 		}
 		prev = cur
 	}
-	if absi(prev-targetAt(0.75)) > 6 {
-		t.Fatalf("drag to 75%% landed on line %d, want ~%d", prev, targetAt(0.75))
+	hw.DispatchInput(platform.MouseMoveEvent{Position: point(0.25), PressedButton: btnPtr(platform.ButtonLeft)})
+	if got := line(); got != start {
+		t.Fatalf("returning to the drag anchor moved from %d to %d", start, got)
 	}
-
-	// The bottom of the rail reaches the end of the document (2px above the
-	// exact boundary: the last pixel row belongs to the status bar).
-	if end := clickFrac(0.98); end < maxScroll-4 {
-		t.Fatalf("click at the rail bottom landed on line %d, want ~%d", end, maxScroll)
+	hw.DispatchInput(platform.MouseMoveEvent{Position: point(1), PressedButton: btnPtr(platform.ButtonLeft)})
+	if end := line(); end != maxScroll {
+		t.Fatalf("drag to rail bottom landed on line %d, want %d", end, maxScroll)
 	}
+	hw.DispatchInput(platform.MouseMoveEvent{Position: point(0), PressedButton: btnPtr(platform.ButtonLeft)})
+	if got := line(); got != 0 {
+		t.Fatalf("drag to rail top landed on line %d", got)
+	}
+	hw.DispatchInput(platform.MouseUpEvent{Button: platform.ButtonLeft, Position: point(0)})
 }
 
 // TestGutterThreeDigitNumbersAtScale renders a >100-line file at Windows
@@ -160,7 +121,7 @@ func TestGutterThreeDigitNumbersAtScale(t *testing.T) {
 			// Gutter geometry: pane starts below menu+tab bars; the gutter is
 			// the fixed-width column at the pane's left edge (tree hidden).
 			top := (ui.MenuBarHeight + ui.TabBarHeight) * s
-			gutterW := editor.GutterWidth(150, ws.CharAdvance) * s
+			gutterW := editor.GutterWidth(150, ws.CharAdvance, false) * s
 			for row := 1; row <= 10; row++ { // scroll=90: rows are lines 91..100
 				bandTop := int(top + float32(row)*lineH + lineH*0.15)
 				bandBot := int(top + float32(row)*lineH + lineH*0.85)
@@ -233,11 +194,16 @@ func TestSvgIconsAtHiDPIScale(t *testing.T) {
 	treeTop := treePanelTop + 31*s
 
 	// The panel header carries the root folder's mauve icon; the two child
-	// rows are .go files with sky file icons.
+	// rows are .go files painting their Go wordmark glyph in the fixed Go
+	// accent color (ui.FileAccentColor resolves what FileTypeIcon paints).
 	rowsWithIcon := 0
 	const wantRows = 3
 	for row := -1; row < wantRows-1; row++ {
-		want := handle.View.Read(cx).Theme().Sky.ToRgb()
+		theme := handle.View.Read(cx).Theme()
+		want := theme.Sky.ToRgb()
+		if row >= 0 { // file rows: fixed file-type color, not the theme
+			want = ui.FileAccentColor("a.go", theme).ToRgb()
+		}
 		var rowY float32
 		if row < 0 { // header
 			rowY = treePanelTop + 15*s
@@ -266,9 +232,10 @@ func TestSvgIconsAtHiDPIScale(t *testing.T) {
 			scale, rowsWithIcon, wantRows, shot)
 	}
 
-	// Tab icons: the wide.go tab's Sky icon must sit inside the tab's left
-	// half (x < 140 device px), not at the window origin.
-	sky := handle.View.Read(cx).Theme().Sky.ToRgb()
+	// Tab icons: the main.go tab's Go wordmark glyph must sit inside the
+	// tab's left half (x < 140 device px), not at the window origin. The
+	// glyph paints in the fixed Go accent color (see ui.FileAccentColor).
+	goIcon := ui.FileAccentColor("main.go", handle.View.Read(cx).Theme()).ToRgb()
 	tabTop := ui.MenuBarHeight * s
 	tabBot := tabTop + ui.TabBarHeight*s
 	iconInk := 0
@@ -276,7 +243,7 @@ func TestSvgIconsAtHiDPIScale(t *testing.T) {
 		for x := int(treeW) + 4; x < int(treeW)+140 && x < img.Width; x++ {
 			i := (y*img.Width + x) * 4
 			r, g, b := img.Pixels[i], img.Pixels[i+1], img.Pixels[i+2]
-			if absf(float32(r)-sky.R*255) < 28 && absf(float32(g)-sky.G*255) < 28 && absf(float32(b)-sky.B*255) < 28 {
+			if absf(float32(r)-goIcon.R*255) < 28 && absf(float32(g)-goIcon.G*255) < 28 && absf(float32(b)-goIcon.B*255) < 28 {
 				iconInk++
 			}
 		}

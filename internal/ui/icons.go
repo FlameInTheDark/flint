@@ -37,7 +37,14 @@ var lucideIcons = map[string]string{
 	"x":               `<path d="M18 6 6 18" /><path d="m6 6 12 12" />`,
 	"plus":            `<path d="M5 12h14" /><path d="M12 5v14" />`,
 	"minus":           `<path d="M5 12h14" />`,
-	"eraser":          `<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21" /><path d="M22 21H7" /><path d="m5 11 9 9" />`,
+	// Debugger controls: pause/resume, and step arrows that read like
+	// IntelliJ's step actions (arc over = step over, into a line = step
+	// into, up from a line = step out).
+	"pause":              `<rect x="14" y="4" width="4" height="16" rx="1" /><rect x="6" y="4" width="4" height="16" rx="1" />`,
+	"redo":               `<path d="M21 7v6h-6" /><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7" />`,
+	"arrow-down-to-line": `<path d="M12 17V3" /><path d="m6 11 6 6 6-6" /><path d="M19 21H5" />`,
+	"arrow-up-from-line": `<path d="m18 9-6-6-6 6" /><path d="M12 3v14" /><path d="M5 21h14" />`,
+	"eraser":             `<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21" /><path d="M22 21H7" /><path d="m5 11 9 9" />`,
 }
 
 // Icon renders a Lucide icon at the given size in logical pixels.

@@ -295,7 +295,7 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 	header := renderHeader(cfg, t, snap)
 	strip := renderResizeStrip(cfg, t)
 
-	panel := elements.NewDiv().Flex().FlexCol().H(ui.Px(cfg.Height)).
+	panel := elements.NewDiv().ID(ui.StructID("terminal-panel")).Flex().FlexCol().H(ui.Px(cfg.Height)).
 		FlexShrink(0).
 		BgColor(t.Surface).BorderT_1().BorderColor(t.Surface1)
 	panel = panel.Child(strip).Child(header).Child(body)
@@ -671,7 +671,7 @@ func renderTermTab(cfg PaneConfig, t ui.Theme, i int, tab Tab) gpui.Element {
 	}
 	if cfg.OnCloseTab != nil {
 		el = el.Child(elements.NewDiv().
-			ID(elements.ButtonID(fmt.Sprintf("terminal-close-tab-%d", i))).Tooltip("Close terminal tab").
+			ID(elements.ButtonID(fmt.Sprintf("terminal-close-tab-%d", i))).TooltipBuilder(ui.Tooltip("Close terminal tab")).
 			FlexShrink(0).
 			Flex().ItemsCenter().JustifyCenter().
 			W(ui.Px(termClosePx)).H(ui.Px(termClosePx)).Rounded(ui.AbsPx(3)).
@@ -697,7 +697,7 @@ func renderTermTab(cfg PaneConfig, t ui.Theme, i int, tab Tab) gpui.Element {
 func headerButton(t ui.Theme, id, icon, tip string, color gc.Hsla, onClick func(w *gpui.Window)) gpui.Element {
 	return elements.NewDiv().
 		ID(elements.ButtonID("terminal-" + id)).
-		Tooltip(tip).
+		TooltipBuilder(ui.Tooltip(tip)).
 		Flex().ItemsCenter().JustifyCenter().
 		H(ui.Px(20)).Px(ui.DefPx(6)).Rounded(ui.AbsPx(4)).
 		CursorPointer().

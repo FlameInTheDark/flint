@@ -96,12 +96,20 @@ func Run() {
 	// changes: a prompt (upstream window.prompt) asks what to do, and
 	// quitting resumes once answered (Discard & Quit / Cancel).
 	shouldClose := func() bool { return true }
+	var inputWindow *gpui.Window
 	a := demo.Start[Workspace](demo.Config{
 		Name:              "flint",
 		Title:             "Flint",
 		Size:              geometry.SizePixels(1100, 700),
 		OnShouldClose:     func() bool { return shouldClose() },
 		CustomDecorations: useCustomDecorations,
+		WrapInput: func(next func(platform.Input) platform.DispatchEventResult, dispatch func(func())) func(platform.Input) platform.DispatchEventResult {
+			return newRailDragInput(next, func(pos geometry.Point[geometry.Pixels]) bool {
+				return editorRailHit(inputWindow, pos)
+			}, func(delay time.Duration, f func()) {
+				time.AfterFunc(delay, func() { dispatch(f) })
+			}).handle
+		},
 	}, func(w *gpui.Window, cx *app.Context[Workspace]) Workspace {
 		ws := New("Flint")
 		ws.measure(w)
@@ -117,6 +125,7 @@ func Run() {
 	})
 	cx := a.App.App
 	handle := a.Handle
+	inputWindow = handle.Window
 
 	update := func(f func(*Workspace)) {
 		handle.View.Update(cx, func(state *Workspace, c *app.Context[Workspace]) any {

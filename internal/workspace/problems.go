@@ -77,6 +77,7 @@ func (ws *Workspace) openProblem(p workspaceProblem) {
 func renderProblems(ws *Workspace, t ui.Theme, update updateFn) gpui.Element {
 	problems := ws.problems()
 	h := ws.problemScroll
+	persistScroll(h, &ws.problemTop)
 	header := elements.NewDiv().Flex().ItemsCenter().H(ui.Px(32)).FlexShrink(0).Px(ui.DefPx(12)).Gap(ui.DefPx(8)).BgColor(t.Surface).BorderB_1().BorderColor(t.Surface1).
 		Child(elements.NewText("Problems").WithTextColor(t.Text)).Child(elements.NewText(fmt.Sprintf("%d", len(problems))).WithTextColor(t.Dim)).Child(elements.NewDiv().FlexGrow(1)).
 		Child(elements.NewDiv().ID(elements.ButtonID("problems-close")).CursorPointer().Px(ui.DefPx(8)).Rounded(ui.AbsPx(4)).Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface2) }).OnClick(func(_ gpui.ClickEvent, w *gpui.Window) {
@@ -89,6 +90,7 @@ func renderProblems(ws *Workspace, t ui.Theme, update updateFn) gpui.Element {
 			dy := ev.Delta.PixelDelta(geometry.Px(20)).Y.AsF32()
 			if dy != 0 {
 				h.ScrollTopBy(-dy)
+				ws.problemTop = max(0, ws.problemTop-dy)
 				w.StopPropagation()
 				w.Refresh()
 			}
@@ -120,5 +122,12 @@ func renderProblems(ws *Workspace, t ui.Theme, update updateFn) gpui.Element {
 			Child(elements.NewText(label).WithTextColor(color)).Child(elements.NewText(location).WithTextColor(t.Accent)).Child(elements.NewText(message).WithTextColor(t.Text))
 		body = body.Child(row)
 	}
-	return elements.NewDiv().Flex().FlexCol().H(ui.Px(ws.effectiveTermHeight())).FlexShrink(0).BgColor(t.EditorBg).BorderT_1().BorderColor(t.Surface1).Child(header).Child(body)
+	return elements.NewDiv().ID(elements.ButtonID("problems-panel")).Flex().FlexCol().H(ui.Px(ws.effectiveTermHeight())).FlexShrink(0).BgColor(t.EditorBg).BorderT_1().BorderColor(t.Surface1).
+		// Shared dock resize strip: dragging the top edge re-anchors the
+		// bottom dock's height (the terminal dock's edge behavior).
+		Child(renderDockResize("problems-resize", t, func(y float32, w *gpui.Window) {
+			update(func(s *Workspace) { s.SetTermHeight(y) })
+			w.Refresh()
+		})).
+		Child(header).Child(body)
 }

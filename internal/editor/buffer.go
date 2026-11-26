@@ -70,8 +70,28 @@ type Buffer struct {
 	// without touching the text system. Maintained by setLines/apply.
 	lineCols []int
 	// maxCols is the widest line's display column count (max of lineCols).
-	maxCols int
-	minimap minimapCache
+	maxCols     int
+	minimap     minimapCache
+	minimapDrag minimapDragState
+
+	// hlStates caches the per-line highlight start states (see
+	// LineStates): raw strings and block comments span lines, so each
+	// line's highlighting depends on the context the previous lines
+	// left behind. Invalidated by any edit (revision) or language change.
+	hlRev    uint64
+	hlLang   string
+	hlStates []LineState
+
+	// Fold state: the ranges recompute per (revision, language) like the
+	// highlight states; the user's folded set persists across edits keyed
+	// by header line (an edit inside a folded function keeps it folded;
+	// a header that stops opening a range drops its flag).
+	foldKey         foldKey
+	foldList        []FoldRange
+	foldFolded      map[int]bool
+	foldActive      []FoldRange
+	foldEnds        []int // prefix maximum ends of the sorted collapsed ranges
+	foldActiveValid bool
 
 	// Cursor and Anchor are selection endpoints in byte offsets.
 	Cursor int
@@ -259,6 +279,26 @@ func (b *Buffer) LineCols(i int) int {
 // MaxLineCols returns the widest line's display column count (O(1); the
 // per-line widths are maintained incrementally by edits).
 func (b *Buffer) MaxLineCols() int { return b.maxCols }
+
+// LineStates returns the highlight context each line starts in (index i is
+// line i; states[0] is always StateNormal). Raw strings (`...`), block
+// comments (/* ... */) and Python triple-quoted strings span lines, so
+// highlighting one line needs the context the text before it ended in.
+// Memoized per (revision, language); recomputed after any edit or a
+// language-override change with a linear scan that builds no runs.
+func (b *Buffer) LineStates(lang string) []LineState {
+	if b.hlStates != nil && b.hlRev == b.Revision && b.hlLang == lang {
+		return b.hlStates
+	}
+	states := make([]LineState, len(b.Lines))
+	st := StateNormal
+	for i, line := range b.Lines {
+		states[i] = st
+		st = nextLineState(line, lang, st)
+	}
+	b.hlRev, b.hlLang, b.hlStates = b.Revision, lang, states
+	return states
+}
 
 // locate maps a byte offset to (line, col-in-line) via binary search over
 // the line index. An offset pointing at a line's newline belongs to that
@@ -665,6 +705,62 @@ func (b *Buffer) apply(s, e int, text string) {
 	}
 	si, so := b.locate(s)
 	ei, eo := b.locate(e)
+
+	// Fold-state maintenance (before the splice invalidates
+	// lineStarts): an edit entirely above a folded region shifts the
+	// region by the line-count delta, an edit entirely below keeps it,
+	// and an edit overlapping the region (header or hidden body)
+	// unfolds it — the region's shape is no longer the user's view.
+	if len(b.foldFolded) > 0 {
+		foldFix := map[int]bool{}
+		delta := strings.Count(text, "\n") - strings.Count(b.rangeText(s, e), "\n")
+		for start := range b.foldFolded {
+			if start < 0 || start >= len(b.lineStarts) {
+				continue
+			}
+			// The region's extent comes from the (pre-edit) fold
+			// list; a flag without a range is stale and drops.
+			rangeEnd := -1
+			for i := range b.foldList {
+				if b.foldList[i].Start == start {
+					rangeEnd = b.foldList[i].End
+					break
+				}
+				if b.foldList[i].Start > start {
+					break
+				}
+			}
+			if rangeEnd < start {
+				continue // no such range anymore: drop
+			}
+			endLine := min(rangeEnd, len(b.Lines)-1)
+			startOff := b.lineStarts[start]
+			endOff := b.lineStarts[endLine] + len(b.Lines[endLine])
+			headerEnd := startOff + len(b.Lines[start]) // end of the header line
+			switch {
+			case e <= startOff:
+				// Entirely above the region: shift with it.
+				foldFix[start+delta] = true
+			case s > endOff:
+				// Entirely below the region: keep.
+				foldFix[start] = true
+			case s >= startOff && e <= headerEnd:
+				// Confined to the visible header line: typing
+				// on a folded header must not expand it. A
+				// newline typed at the line start pushes the
+				// header down with the text.
+				if s == startOff && delta > 0 {
+					foldFix[start+delta] = true
+				} else {
+					foldFix[start] = true
+				}
+			default:
+				// Overlaps the hidden body: unfold.
+			}
+		}
+		b.foldFolded = foldFix
+		b.foldActiveValid = false
+	}
 
 	// Splice the affected lines: [prefix] + split(middle) + [suffix].
 	prefix := b.Lines[si][:so]

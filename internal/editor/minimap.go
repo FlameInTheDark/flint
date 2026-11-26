@@ -12,6 +12,12 @@ type minimapBlock struct {
 	color    gc.Hsla
 }
 
+// minimapDragState persists the pointer anchor across frame rebuilds.
+type minimapDragState struct {
+	active    bool
+	y, target float32
+}
+
 type minimapKey struct {
 	revision uint64
 	language string
@@ -51,17 +57,25 @@ func (c *minimapCache) blocks(buf *Buffer, line int) []minimapBlock {
 		return row.blocks
 	}
 	row.line, row.valid = line, true
-	row.blocks = buildMinimapBlocks(row.blocks[:0], buf.Line(line), c.key)
+	// The row's start context comes from the buffer's per-line states, so
+	// the minimap colors lines inside raw strings and block comments the
+	// same way the code pane does.
+	st := StateNormal
+	if states := buf.LineStates(c.key.language); line < len(states) {
+		st = states[line]
+	}
+	row.blocks = buildMinimapBlocks(row.blocks[:0], buf.Line(line), c.key, st)
 	return row.blocks
 }
 
-func buildMinimapBlocks(dst []minimapBlock, line string, key minimapKey) []minimapBlock {
+func buildMinimapBlocks(dst []minimapBlock, line string, key minimapKey, st LineState) []minimapBlock {
 	if strings.TrimSpace(line) == "" {
 		return dst
 	}
 	display := DisplayLine(line)
 	end := 0
-	for _, run := range HighlightCached(display, key.language, key.palette) {
+	runs, _ := HighlightCachedIn(display, key.language, st, key.palette)
+	for _, run := range runs {
 		if len(dst) >= maxMinimapRunsPerLine {
 			break
 		}

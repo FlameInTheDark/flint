@@ -96,11 +96,8 @@ func TestMinimapSemantics(t *testing.T) {
 		t.Fatalf("editor scroll reset failed: got %d", s)
 	}
 
-	// Clicking the minimap at a fraction seeks the editor so the clicked
-	// region lands under the viewport thumb: the exact inverse of the
-	// thumb mapping (thumb top = (scroll - contentTop) * miniH) undoes
-	// both the thumb sweep and the miniature's slow slide. At CONSTANT
-	// thumb size; click 50%: scroll ~= 50% of the scrollable range.
+	// A click selects the line currently painted at that point in the
+	// sliding miniature, not that percentage of the whole document.
 	mm := findMinimap(t, handle)
 	clickAt := func(frac float32) int {
 		pos := geometry.PointPixels(mm.x+mm.w/2, mm.y+frac*mm.h)
@@ -110,32 +107,18 @@ func TestMinimapSemantics(t *testing.T) {
 		handle.Window.Draw()
 		return l
 	}
-	indH := wantThumbH
 	mmCapacity := int(mm.h / editor.MinimapLineHeight)
-	target := func(frac float32) int {
-		want := frac*mm.h - indH/2
-		travel := mm.h - indH
-		if want < 0 {
-			want = 0
-		}
-		if want > travel {
-			want = travel
-		}
-		denom := mmCapacity - visible
-		if denom < 1 {
-			denom = 1
-		}
-		t := (want / editor.MinimapLineHeight) * float32(maxScroll) / float32(denom)
-		if t > float32(maxScroll) {
-			t = float32(maxScroll)
-		}
-		return int(t)
-	}
-	for _, frac := range []float32{0.25, 0.5, 0.75} {
-		got := clickAt(frac)
-		want := target(frac)
-		if absi(got-want) > 6 {
-			t.Fatalf("minimap click at %.0f%% landed on line %d, want ~%d", frac*100, got, want)
+	for _, initial := range []int{0, maxScroll / 2, maxScroll} {
+		for _, frac := range []float32{0.25, 0.5, 0.75} {
+			editorScroll(initial)
+			handle.Window.Draw()
+			top := float32(initial) / float32(maxScroll) * float32(max(0, total-mmCapacity))
+			clicked := min(top+frac*mm.h/editor.MinimapLineHeight, float32(total-1))
+			want := int(min(max(clicked-float32(visible)/2, 0), float32(maxScroll)))
+			got := clickAt(frac)
+			if absi(got-want) > 1 {
+				t.Fatalf("scroll %d, click %.0f%% landed on line %d, want %d", initial, frac*100, got, want)
+			}
 		}
 	}
 }
@@ -160,5 +143,28 @@ func TestMinimapSmallFileShowsWholeDoc(t *testing.T) {
 	// visual scene test renders this state.
 	if s, _ := handle.View.Read(cx).DebugScrollState(); s != 0 {
 		t.Fatalf("small file scrolled: %d", s)
+	}
+}
+
+func TestMinimapClickOnFittingDocument(t *testing.T) {
+	var src strings.Builder
+	for i := 0; i < 100; i++ {
+		fmt.Fprintf(&src, "line %d\n", i)
+	}
+	hp, handle, cx := openEditorWindowWith(t, src.String())
+	ws := handle.View.Read(cx)
+	visible := editor.Metrics{LineHeight: ws.LineHeight}.VisibleLines(ws.DebugPaneHeight())
+	mm := findMinimap(t, handle)
+	if ws.Buf().LineCount() >= int(mm.h/editor.MinimapLineHeight) || ws.Buf().LineCount() <= visible {
+		t.Fatal("fixture must fit the minimap but overflow the editor")
+	}
+	const clickedLine = 70
+	pos := geometry.PointPixels(mm.x+mm.w/2, mm.y+(float32(clickedLine)+0.25)*editor.MinimapLineHeight)
+	hp.LastWindow().DispatchInput(platform.MouseDownEvent{Button: platform.ButtonLeft, Position: pos})
+	hp.LastWindow().DispatchInput(platform.MouseUpEvent{Button: platform.ButtonLeft, Position: pos})
+	got, _ := handle.View.Read(cx).DebugScrollState()
+	want := clickedLine - visible/2
+	if absi(got-want) > 1 {
+		t.Fatalf("click on miniature line %d scrolled to %d, want %d", clickedLine, got, want)
 	}
 }

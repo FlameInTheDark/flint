@@ -87,9 +87,17 @@ func TestScrollEaseSnapsOnWholeRowPaths(t *testing.T) {
 func TestScrollDeltaClamps(t *testing.T) {
 	ws := easeWorkspace(t)
 	ws.addScrollDelta(1e6)
-	max := float32(ws.maxScrollRows())
+	// The wheel may rest on the fractional bottom slack (the last line at
+	// the pane's bottom edge): at least the last whole-row page, never a
+	// full row beyond it.
+	max := ws.maxScrollRowsF()
 	if ws.scrolls[ws.Active] != max {
 		t.Fatalf("target %v exceeds max %v", ws.scrolls[ws.Active], max)
+	}
+	// The pixel-exact end sits within one row of (at most on) the
+	// whole-row ceiling.
+	if max > float32(ws.maxScrollRows()) || max < float32(ws.maxScrollRows()-1) {
+		t.Fatalf("fractional max %v out of the last-page range (%d,%d]", max, ws.maxScrollRows()-1, ws.maxScrollRows())
 	}
 	ws.advanceScrollAnimAt(time.Now().Add(time.Second))
 	ws.addScrollDelta(-1e6)

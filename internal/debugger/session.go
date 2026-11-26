@@ -108,6 +108,27 @@ func Start(command, dir, mode string, breakpoints map[string][]int, args ...stri
 	return s
 }
 
+// OfflineSession returns a session that carries a fixed snapshot without a
+// Delve process: the headless verification and demos render it like a live
+// paused session. Its context starts canceled, so requests are rejected
+// (the snapshot never changes) and Stop is a no-op — the usual shutdown
+// paths work unchanged.
+func OfflineSession(snap Snapshot) *Session {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s := &Session{
+		ctx: ctx, cancel: cancel,
+		done: make(chan struct{}), changes: make(chan struct{}, 1),
+		requests: make(chan request, 16), breakChanged: make(chan struct{}, 1),
+		snap: snap, wanted: make(map[string][]int),
+	}
+	go func() {
+		<-ctx.Done()
+		close(s.done)
+	}()
+	return s
+}
+
 func (s *Session) Done() <-chan struct{}    { return s.done }
 func (s *Session) Changes() <-chan struct{} { return s.changes }
 
@@ -147,6 +168,12 @@ func (s *Session) addOutput(text string) {
 	s.mu.Unlock()
 	s.signal()
 }
+
+// AppendOutput feeds the session's output buffer directly (the debug
+// panel's Output tab renders it). Live processes stream Delve's
+// stdout/stderr through the same buffer; demo and headless-verification
+// sessions inject synthetic log lines through this method.
+func (s *Session) AppendOutput(text string) { s.addOutput(text) }
 
 func (s *Session) Stop() { s.cancel() }
 
