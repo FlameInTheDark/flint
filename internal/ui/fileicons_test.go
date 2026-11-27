@@ -1,6 +1,9 @@
 package ui
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestFileTypeIconNameResolution(t *testing.T) {
 	cases := map[string]string{
@@ -9,19 +12,33 @@ func TestFileTypeIconNameResolution(t *testing.T) {
 		"go.sum":      "hash",
 		"go.work":     "package",
 		"data.json":   "braces",
-		"style.css":   "braces",
 		"cfg.yaml":    "list",
 		"cfg.yml":     "list",
 		"app.toml":    "settings-2",
-		"notes.md":    "markdown",
-		"index.html":  "globe",
-		"site.xml":    "code",
-		"app.js":      "code",
-		"app.ts":      "code",
-		"calc.py":     "python-logo",
-		"lib.rs":      "rust-logo",
-		"core.c":      "code",
-		"run.sh":      "terminal",
+		"notes.md":    "logo:markdown",
+		"index.html":  "logo:html",
+		"site.xml":    "file-code",
+		"style.css":   "logo:css",
+		"app.js":      "logo:js",
+		"app.ts":      "logo:ts",
+		"calc.py":     "logo:python",
+		"lib.rs":      "logo:rust",
+		"core.c":      "logo:c",
+		"app.cpp":     "logo:cpp",
+		"Program.cs":  "logo:csharp",
+		"Main.java":   "logo:java",
+		"lib.kt":      "logo:kotlin",
+		"app.swift":   "logo:swift",
+		"app.rb":      "logo:ruby",
+		"index.php":   "logo:php",
+		"init.lua":    "logo:lua",
+		"main.dart":   "logo:dart",
+		"Grid.scala":  "logo:scala",
+		"tools.pl":    "logo:perl",
+		"App.vue":     "logo:vue",
+		"page.svelte": "logo:svelte",
+		"run.sh":      "logo:bash",
+		"build.bat":   "terminal",
 		"query.sql":   "database",
 		"photo.png":   "image",
 		"pic.jpg":     "image",
@@ -50,7 +67,7 @@ func TestFileTypeIconNameResolution(t *testing.T) {
 	}
 	for _, name := range []string{"unknown.xyz", "Makefile2", "json"} {
 		if got := FileTypeIconName(name); got != "" {
-			t.Errorf("%s -> %q, want the fallback \"\"", name, got)
+			t.Errorf("%s -> %q, want the fallback %q", name, got, "")
 		}
 	}
 }
@@ -61,6 +78,30 @@ func TestFileTypeIconCaseInsensitive(t *testing.T) {
 	}
 	if got := FileTypeIconName("Photo.PNG"); got != "image" {
 		t.Fatalf("Photo.PNG -> %q", got)
+	}
+	if got := FileTypeIconName("APP.TS"); got != "logo:ts" {
+		t.Fatalf("APP.TS -> %q", got)
+	}
+}
+
+// TestFileTypeLogoArtwork pins the logo set: every "logo:" key a file
+// spec can resolve to must carry real embedded devicon artwork (the
+// official language marks — not a placeholder or a missing entry that
+// would silently fall back to the generic document glyph).
+func TestFileTypeLogoArtwork(t *testing.T) {
+	for ext, spec := range fileTypeExts {
+		key, ok := strings.CutPrefix(spec.shape, "logo:")
+		if !ok {
+			continue
+		}
+		svg, ok := logoSvg[key]
+		if !ok {
+			t.Errorf("extension %s resolves to logo %q with no embedded artwork", ext, key)
+			continue
+		}
+		if !strings.Contains(svg, "viewBox") || !strings.Contains(svg, "<path") {
+			t.Errorf("logo %q artwork is not a real svg with paths", key)
+		}
 	}
 }
 

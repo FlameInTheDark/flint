@@ -593,6 +593,27 @@ def main():
 	write("index.html", "<!doctype html>\n<html>\n  <body><h1>flint</h1></body>\n</html>\n")
 	write("app.js", "const greet = (n) => `hello ${n}`;\nconsole.log(greet('flint'));\n")
 	write("lib.rs", "fn banner(title: &str, width: usize) -> String {\n    let line = \"=\".repeat(width);\n    format!(\"{line}\\n  {title}\\n{line}\")\n}\n")
+	// One file per logo'd extension: the tree frame then shows every
+	// official language mark the picker can reach, not just the generic
+	// glyphs.
+	write("core.c", "#include <stdio.h>\n\nint main(void) { puts(\"flint\"); return 0; }\n")
+	write("app.cpp", "#include <iostream>\n\nint main() { std::cout << \"flint\"; }\n")
+	write("Program.cs", "class Program {\n    static void Main() => System.Console.WriteLine(\"flint\");\n}\n")
+	write("Main.java", "class Main {\n    public static void main(String[] a) { System.out.println(\"flint\"); }\n}\n")
+	write("app.ts", "const greet = (n: string): string => `hello ${n}`;\nconsole.log(greet('flint'));\n")
+	write("index.php", "<?php\necho 'hello from flint';\n")
+	write("app.rb", "def banner(n) = '=' * n\nputs banner(40)\n")
+	write("lib.kt", "fun main() {\n    println(\"flint\")\n}\n")
+	write("app.swift", "import Foundation\nprint(\"flint\")\n")
+	write("init.lua", "print(\"flint\")\n")
+	write("main.dart", "void main() {\n  print('flint');\n}\n")
+	write("Grid.scala", "object Grid {\n  def main(args: Array[String]): Unit = println(\"flint\")\n}\n")
+	write("tools.pl", "print \"flint\\n\";\n")
+	write("App.vue", "<template>\n  <div>flint</div>\n</template>\n")
+	write("page.svelte", "<div>flint</div>\n")
+	write("config.xml", "<?xml version=\"1.0\"?>\n<app name=\"flint\"/>\n")
+	write("style.scss", "$c: #eee;\nbody { color: $c; }\n")
+	write("build.bat", "@echo off\necho hello from the batch script\n")
 	write("query.sql", "SELECT name, version FROM modules WHERE indirect = false;\n")
 	write("script.sh", "#!/bin/sh\necho hello from the script\n")
 	write("table.csv", "name,version\nbar,1.4.2\nqux,2.1.0\n")
@@ -619,6 +640,14 @@ def main():
 	// flattenVisible always paints the root's children, so every fixture
 	// file (one icon per file type) is on screen right away.
 	frame := out("editor_17_file_icons.png")
+	must(savePNG(hw, frame))
+	verifyInk(hw, frame)
+	// The list is longer than the viewport (one icon per file type);
+	// park it on the last page so the bottom half of the icon set is
+	// verified too.
+	update(func(ws *Workspace) { ws.treeScrollHandle.ScrollToBottom() })
+	a.Handle.Window.Draw()
+	frame = out("editor_17b_file_icons_end.png")
 	must(savePNG(hw, frame))
 	verifyInk(hw, frame)
 
@@ -721,6 +750,18 @@ def main():
 	})
 	a.Handle.Window.Draw()
 	frame = out("editor_24b_lang_menu_scrolled.png")
+	must(savePNG(hw, frame))
+	verifyInk(hw, frame)
+	// Park the view on the last page too: across the three frames every
+	// catalog row (and its icon) is on screen at least once.
+	update(func(ws *Workspace) {
+		if m := ws.LangMenu; m != nil {
+			m.Scroll = len(filteredLanguages("")) - int(ui.LangMenuVisible)
+			m.Selected = m.Scroll
+		}
+	})
+	a.Handle.Window.Draw()
+	frame = out("editor_24c_lang_menu_end.png")
 	must(savePNG(hw, frame))
 	verifyInk(hw, frame)
 	update(func(ws *Workspace) { ws.CloseLangMenu() })

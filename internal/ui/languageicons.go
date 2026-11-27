@@ -1,10 +1,12 @@
-// Language picker icons: every catalog language shows the SAME glyph its
-// files get in the file tree (ui/fileicons.go — the GoLand / Zed / VS Code
-// icon-theme family), so the selector reads as an extension of the tree
-// rather than a second icon set: the Go wordmark for Go, the two-snake
-// mark for Python, the gear for Rust, the braces for JSON, and so on.
-// Unknown languages keep the plain document glyph in the theme's dim
-// color — exactly like an unrecognized file in the tree.
+// Language picker icons: every catalog language shows the SAME artwork
+// its files get in the file tree — for the branded languages the official
+// devicon logo (langlogos.go: the Go wordmark, the Python two-snake mark,
+// the Rust gear, the Java coffee cup, the JS/TS badges, and so on — the
+// same family VS Code's icon themes, GoLand and Zed draw from), for the
+// generic formats the matching Lucide-style glyph (braces for JSON, lists
+// for YAML, and so on). Unknown languages keep the plain document glyph
+// in the theme's dim color — exactly like an unrecognized file in the
+// tree.
 
 package ui
 
