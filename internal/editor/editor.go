@@ -128,8 +128,6 @@ type PaneConfig struct {
 	// OnScroll scrolls by whole lines (positive = down). Snap paths:
 	// minimap/scrollbar seeks and caret scrolling land exactly.
 	OnScroll func(delta int)
-	// OnScrollTo seeks to an absolute line, independent of the last frame.
-	OnScrollTo func(line int)
 	// OnWheelScroll applies a raw wheel delta (fractional rows) through
 	// the workspace's smooth-scroll ease. When nil the pane falls back
 	// to OnScroll with the delta truncated to rows.
@@ -366,7 +364,7 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 	// scroll that lands inside a collapsed region rests on the first
 	// line after it — the view never shows mid-fold.
 	lang, palette := buf.LanguageOf(), paletteOf(t)
-	buf.FoldRanges() // memoize + validate the folded set for this revision
+	folds := buf.FoldRanges() // memoize + validate the folded set for this revision
 	foldable := Foldable(lang)
 	if foldable {
 		for {
@@ -374,11 +372,7 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 			if f == nil {
 				break
 			}
-			if f.End+1 >= total {
-				first = f.Start
-			} else {
-				first = f.End + 1
-			}
+			first = min(f.End+1, max(0, total-1))
 		}
 	}
 
@@ -886,6 +880,16 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 
 	var rail gpui.Element
 	if railW > 0 {
+		// Collapsed ranges paint a dim band in the minimap where the
+		// hidden lines live.
+		var foldedRanges []FoldRange
+		if foldable {
+			for _, f := range folds {
+				if buf.IsFolded(f.Start) {
+					foldedRanges = append(foldedRanges, f)
+				}
+			}
+		}
 		rail = renderRail(railConfig{
 			Theme:         t,
 			Buf:           buf,
@@ -895,8 +899,8 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 			ScrollF:       scrollF,
 			Visible:       visible,
 			ScrollX:       scrollX,
+			Folds:         foldedRanges,
 			OnScroll:      cfg.OnScroll,
-			OnScrollTo:    cfg.OnScrollTo,
 			OnWheelScroll: cfg.OnWheelScroll,
 			OnScrollX:     cfg.OnScrollX,
 			CursorLine:    cursorLine,
@@ -1105,24 +1109,18 @@ type railConfig struct {
 	Scroll  int
 	// ScrollF is the rendered fractional scroll (the wheel ease) — the
 	// miniature's top offset and the thumb track it smoothly.
-	ScrollF    float32
-	Visible    int
-	ScrollX    float32
-	OnScroll   func(delta int)
-	OnScrollTo func(line int)
+	ScrollF  float32
+	Visible  int
+	ScrollX  float32
+	OnScroll func(delta int)
 	// OnWheelScroll, when set, carries the rail's wheel deltas through the
 	// smooth-scroll ease (drag seeks stay on the snapped OnScroll).
 	OnWheelScroll func(deltaF float32)
 	OnScrollX     func(deltaPx float32)
 	CursorLine    int
-}
-
-func (cfg railConfig) seek(target int) {
-	if cfg.OnScrollTo != nil {
-		cfg.OnScrollTo(target)
-	} else if cfg.OnScroll != nil {
-		cfg.OnScroll(target - cfg.Scroll)
-	}
+	// Folds lists the collapsed ranges: the miniature draws a dim band
+	// over the hidden lines (the upstream editor's folded-region strip).
+	Folds []FoldRange
 }
 
 // renderRail builds the right rail: a code map with a viewport indicator,
@@ -1139,8 +1137,8 @@ func (cfg railConfig) seek(target int) {
 // (ScrollbarLayout::for_minimap), so it covers exactly the miniature rows
 // of the visible code — for a fitting document it sits right on those
 // rows; for a taller one it sweeps the rail while the content slides
-// underneath. Clicking selects a visible miniature row; dragging remains
-// anchored to the initial click while navigating the whole document.
+// underneath. The click/drag mapping stays anchored to the rail, so
+// seeking remains stable across the whole document.
 func renderRail(cfg railConfig) gpui.Element {
 	t := cfg.Theme
 	buf := cfg.Buf
@@ -1166,40 +1164,47 @@ func renderRail(cfg railConfig) gpui.Element {
 		contentTopF = progress * float32(max(0, total-minimapLines))
 	}
 
-	// A click selects the line actually painted under the pointer, not a
-	// percentage of the entire file. The miniature is a sliding window.
-	clickMinimap := func(localY float32) {
-		if (cfg.OnScroll == nil && cfg.OnScrollTo == nil) || maxScrollLines <= 0 {
+	// seekMinimap inverts the thumb mapping (thumb top = (scroll -
+	// contentTop) * miniH): a click/drag under the rail lands the clicked
+	// code region under the viewport thumb.
+	seekMinimap := func(localY float32) {
+		if cfg.OnScroll == nil || maxScrollLines <= 0 {
 			return
 		}
-		if cfg.Height <= 0 {
+		indH := float32(cfg.Visible) * miniH
+		if indH < 2 {
+			indH = 2
+		}
+		travel := cfg.Height - indH
+		if travel <= 0 {
 			return
 		}
-		localY = min(max(localY, 0), cfg.Height)
-		line := min(contentTopF+localY/miniH, float32(total-1))
-		target := min(max(line-float32(cfg.Visible)/2, 0), float32(maxScrollLines))
-		buf.minimapDrag = minimapDragState{active: true, y: localY, target: target}
-		cfg.seek(int(target))
-	}
-	// The minimap slides as the editor moves. Anchor each drag at its
-	// original click, so a stationary pointer does not drift as it slides.
-	// Each side of the anchor maps to the corresponding document endpoint.
-	dragMinimap := func(localY float32) {
-		drag := buf.minimapDrag
-		if !drag.active || cfg.Height <= 0 {
-			return
+		want := localY - indH/2
+		if want < 0 {
+			want = 0
 		}
-		localY = min(max(localY, 0), cfg.Height)
-		target := drag.target
-		if total <= minimapLines {
-			// When the whole file fits, the miniature does not slide.
-			target += (localY - drag.y) / miniH
-		} else if localY < drag.y && drag.y > 0 {
-			target *= localY / drag.y
-		} else if localY > drag.y && drag.y < cfg.Height {
-			target += (float32(maxScrollLines) - target) * (localY - drag.y) / (cfg.Height - drag.y)
+		if want > travel {
+			want = travel
 		}
-		cfg.seek(int(min(max(target, 0), float32(maxScrollLines))))
+		var target float32
+		if total > minimapLines {
+			// The miniature slides underneath; undo both motions.
+			denom := float32(minimapLines - cfg.Visible)
+			if denom < 1 {
+				denom = 1
+			}
+			target = (want / miniH) * float32(maxScrollLines) / denom
+		} else {
+			// The whole document fits the rail: thumb top = scroll * miniH.
+			target = want / miniH
+		}
+		if target < 0 {
+			target = 0
+		}
+		if target > float32(maxScrollLines) {
+			target = float32(maxScrollLines)
+		}
+		cfg.OnScroll(int(target) - cfg.Scroll)
 	}
 
 	cacheKey := minimapKey{revision: buf.Revision, language: buf.LanguageOf(), palette: paletteOf(t), dim: t.Dim,
@@ -1214,7 +1219,7 @@ func renderRail(cfg railConfig) gpui.Element {
 				return
 			}
 			if hb, ok := w.ListenerHitbox(); ok {
-				clickMinimap(ev.Position.Y.AsF32() - float32(hb.Bounds.Origin.Y))
+				seekMinimap(ev.Position.Y.AsF32() - float32(hb.Bounds.Origin.Y))
 				// Capture the pointer for the whole drag: moves keep
 				// matching this hitbox even off the minimap, and the
 				// editor pane's drag-select listener is suppressed by
@@ -1229,13 +1234,12 @@ func renderRail(cfg railConfig) gpui.Element {
 				return
 			}
 			if hb, ok := w.ListenerHitbox(); ok {
-				dragMinimap(ev.Position.Y.AsF32() - float32(hb.Bounds.Origin.Y))
+				seekMinimap(ev.Position.Y.AsF32() - float32(hb.Bounds.Origin.Y))
 			}
 			w.StopPropagation()
 			w.Refresh()
 		}).
 		OnMouseUp(func(ev platform.MouseUpEvent, w *gpui.Window) {
-			buf.minimapDrag.active = false
 			w.ReleasePointer()
 			w.Refresh()
 		}).
@@ -1296,6 +1300,18 @@ func renderRail(cfg railConfig) gpui.Element {
 		// the miniature's top line (only the rows inside the rail
 		// paint, so the per-frame work is bounded by the rail height,
 		// not the document length).
+		foldStarts := map[int]FoldRange{}
+		for _, f := range cfg.Folds {
+			foldStarts[f.Start] = f
+		}
+		inFold := func(line int) bool {
+			for _, f := range cfg.Folds {
+				if line > f.Start && line <= f.End {
+					return true
+				}
+			}
+			return false
+		}
 		firstRow := int(contentTopF)
 		lastRow := min(total, firstRow+minimapLines+1)
 		buf.minimap.prepare(cacheKey, min(total, 2*(minimapLines+1)))
@@ -1304,7 +1320,7 @@ func renderRail(cfg railConfig) gpui.Element {
 			if rowY > cfg.Height {
 				break
 			}
-			if buf.foldFolded[i] {
+			if _, ok := foldStarts[i]; ok {
 				// Collapsed region: a dim band stands in for the
 				// hidden lines (nothing else paints on them).
 				st := style.Style{Background: &gc.Background{
@@ -1317,7 +1333,7 @@ func renderRail(cfg railConfig) gpui.Element {
 				w.PaintQuad(st, b)
 				continue
 			}
-			if buf.foldedRangeContaining(i) != nil {
+			if inFold(i) {
 				continue
 			}
 			if i == cfg.CursorLine {
@@ -1360,7 +1376,7 @@ func renderRail(cfg railConfig) gpui.Element {
 		thumbTop = (min(max(cfg.ScrollF, 0), float32(maxScrollLines)) / float32(maxScrollLines)) * travel
 	}
 	seekV := func(localY float32) {
-		if travel <= 0 || (cfg.OnScroll == nil && cfg.OnScrollTo == nil) {
+		if travel <= 0 || cfg.OnScroll == nil {
 			return
 		}
 		ratio := (localY - thumbH/2) / travel
@@ -1370,7 +1386,7 @@ func renderRail(cfg railConfig) gpui.Element {
 		if ratio > 1 {
 			ratio = 1
 		}
-		cfg.seek(int(ratio * float32(maxScrollLines)))
+		cfg.OnScroll(int(ratio*float32(maxScrollLines)) - cfg.Scroll)
 	}
 	vscroll := elements.NewDiv().
 		ID(elements.ButtonID("vscroll")).

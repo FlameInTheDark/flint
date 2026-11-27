@@ -2,7 +2,6 @@ package workspace
 
 import (
 	"fmt"
-	"strings"
 	"unicode/utf8"
 
 	"github.com/FlameInTheDark/go-gpui/app"
@@ -545,9 +544,6 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 					OnScroll: func(delta int) {
 						update(func(state *Workspace) { state.setScroll(state.scroll() + delta) })
 					},
-					OnScrollTo: func(line int) {
-						update(func(state *Workspace) { state.setScroll(line) })
-					},
 					OnWheelScroll: func(deltaF float32) {
 						update(func(state *Workspace) { state.addScrollDelta(deltaF) })
 					},
@@ -772,7 +768,7 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 	// -----------------------------------------------------------------------
 	onZoomActions(w)
 	if ws.completion != nil && ws.completion.buffer == ws.Buf() {
-		root = root.Child(renderCompletions(ws, t, update, w, winW, winH))
+		root = root.Child(renderCompletions(ws, t, update, winW, winH))
 	}
 	if ws.documentation != nil && ws.documentation.buffer == ws.Buf() {
 		root = root.Child(renderDocumentation(ws, t, update, w, winW, winH))
@@ -1381,6 +1377,10 @@ func renderStatusBar(ws *Workspace, t ui.Theme, update updateFn) gpui.Element {
 					w.Focus(ws.FocusLangMenu)
 					w.Refresh()
 				}).
+				// The same file-type glyph the tabs and the
+				// tree show for this buffer's language,
+				// before the label.
+				Child(ui.LanguageIcon(buf.LanguageOf(), t)).
 				Child(elements.NewText(editor.LanguageLabel(buf.LanguageOf())).WithTextColor(t.Green)).
 				Child(elements.NewText("▾").WithTextColor(t.Dim))
 			bar = bar.Child(langBtn)
@@ -1394,11 +1394,14 @@ func renderStatusBar(ws *Workspace, t ui.Theme, update updateFn) gpui.Element {
 
 // renderLangMenu renders the status-bar language selector: a scrim, then
 // the panel above the status bar's right side — a search field on top and
-// a six-row visible window over the FULL catalog, alphabetically sorted:
-// the mouse wheel (anywhere over the panel), the arrow keys and
-// page-up/down scroll the list; enter applies; escape closes; a slim
-// scrollbar on the list's right edge shows how much of the catalog is
-// below the fold.
+// a ten-row visible window over the FULL catalog, alphabetically sorted,
+// every row fronted by the same file-type glyph its files carry in the
+// tree. The mouse wheel (anywhere over the panel — trackpad deltas
+// included, they accumulate instead of being truncated away), the arrow
+// keys and page-up/down scroll the list; enter applies; escape closes;
+// the scrollbar on the list's right edge is a real control: grab the
+// thumb and drag it, or click the track to jump (the thumb centers under
+// the pointer, like the editor's scrollbars).
 func renderLangMenu(ws *Workspace, t ui.Theme, update updateFn, focusEditor func(*gpui.Window), winW, winH float32) []gpui.Element {
 	menu := ws.LangMenu
 	if menu == nil {
@@ -1491,9 +1494,10 @@ func renderLangMenu(ws *Workspace, t ui.Theme, update updateFn, focusEditor func
 		if idx == sel {
 			row = row.BgColor(t.Surface1)
 		}
-		// the upstream editor's picker row: a language badge, the name, and a
-		// "(current)" suffix on the buffer's language.
-		row = row.Child(langBadge(lang.Id, lang.Name, t)).
+		// the upstream editor's picker row: the language's file-type
+		// icon (the same glyph the tree shows for its files), the
+		// name, and a "(current)" suffix on the buffer's language.
+		row = row.Child(ui.LanguageIcon(lang.Id, t)).
 			Child(elements.NewText(lang.Name).
 				WithTextColor(pick(t.Text, isCurrent, t.Accent)))
 		if isCurrent {
@@ -1507,40 +1511,121 @@ func renderLangMenu(ws *Workspace, t ui.Theme, update updateFn, focusEditor func
 			Child(elements.NewDiv().H(ui.Px(ui.LangMenuRowH)))
 	}
 
-	// Slim scrollbar: the fixed six-row window over the full catalog,
-	// upstream-style — the thumb shows the position and that there IS more
-	// below the fold.
+	// Grabbable scrollbar over the fixed ten-row window: a full-height
+	// track whose thumb drags (pointer-captured, so the drag keeps
+	// steering even off the track) and whose track jumps on click — the
+	// same center-on-pointer seek the editor's scrollbars use. The
+	// painted thumb is 5px wide but the hit strip is
+	// ui.LangMenuScrollbarW wide: a bare 4px thumb with no margin was
+	// the "unable to grab the scroll bar" report.
 	if len(langs) > visible {
-		bodyH := ui.LangMenuRowH * ui.LangMenuVisible
+		bodyH := float32(ui.LangMenuRowH * ui.LangMenuVisible)
 		thumbH := float32(visible) / float32(len(langs)) * float32(bodyH)
-		if thumbH < 16 {
-			thumbH = 16
+		if thumbH < 20 {
+			thumbH = 20
 		}
+		if thumbH > bodyH {
+			thumbH = bodyH
+		}
+		travel := bodyH - thumbH
 		thumbTop := float32(0)
 		if maxScroll > 0 {
-			thumbTop = float32(scroll) / float32(maxScroll) * (float32(bodyH) - thumbH)
+			thumbTop = float32(scroll) / float32(maxScroll) * travel
 		}
-		list = list.Child(elements.NewDiv().
-			Absolute().Right(ui.Px(1)).Top(ui.Px(thumbTop)).
-			W(ui.Px(4)).H(ui.Px(thumbH)).
-			Rounded(ui.AbsPx(2)).
-			BgColor(t.Surface2))
-	}
-
-	// The list panel: fixed height (6 rows), scrolls internally. The
-	// wheel works anywhere over the panel — rows, input or padding.
-	wheel := func(ev platform.ScrollEvent, w *gpui.Window) {
-		delta := -ev.Delta.PixelDelta(geometry.Px(ui.LangMenuRowH)).Y.AsF32() / ui.LangMenuRowH
-		if delta != 0 {
+		// seek centers the thumb under the pointer and jumps the
+		// view there (stateless, so it stays correct across the
+		// re-renders a drag triggers — the editor's scrollbars work
+		// the same way).
+		seek := func(localY float32, w *gpui.Window) {
+			if travel <= 0 {
+				return
+			}
+			ratio := (localY - thumbH/2) / travel
+			if ratio < 0 {
+				ratio = 0
+			}
+			if ratio > 1 {
+				ratio = 1
+			}
+			target := int(ratio * float32(maxScroll))
 			update(func(s *Workspace) {
 				if s.LangMenu != nil {
-					s.LangMenu.Scroll += int(delta)
-					if s.LangMenu.Scroll < 0 {
-						s.LangMenu.Scroll = 0
-					}
-					if n := len(filteredLanguages(s.LangMenu.Filter.String())) - visible; s.LangMenu.Scroll > n {
-						s.LangMenu.Scroll = n
-					}
+					s.LangMenu.Scroll = target
+				}
+			})
+			w.Refresh()
+		}
+		track := elements.NewDiv().
+			ID(elements.ButtonID("lang-menu-scrollbar")).
+			Absolute().Right(ui.Px(0)).Top(ui.Px(0)).
+			W(ui.Px(ui.LangMenuScrollbarW)).H(ui.Px(bodyH)).
+			CursorPointer().
+			Hover(func(s *style.StyleRefinement) { s.BgColor(t.Surface1.Alpha(0.5)) }).
+			OnMouseDown(func(ev platform.MouseDownEvent, w *gpui.Window) {
+				if ev.Button != platform.ButtonLeft {
+					return
+				}
+				if hb, ok := w.ListenerHitbox(); ok {
+					seek(ev.Position.Y.AsF32()-float32(hb.Bounds.Origin.Y), w)
+					// Capture for the whole drag: moves off
+					// the track keep steering the thumb and
+					// cannot start a row click.
+					w.CapturePointer(hb.ID)
+				}
+				w.StopPropagation()
+				w.Refresh()
+			}).
+			OnMouseMove(func(ev platform.MouseMoveEvent, w *gpui.Window) {
+				if !ev.Dragging() {
+					return
+				}
+				if hb, ok := w.ListenerHitbox(); ok {
+					seek(ev.Position.Y.AsF32()-float32(hb.Bounds.Origin.Y), w)
+				}
+				w.StopPropagation()
+				w.Refresh()
+			}).
+			OnMouseUp(func(ev platform.MouseUpEvent, w *gpui.Window) {
+				w.ReleasePointer()
+				w.Refresh()
+			}).
+			Child(elements.NewDiv().
+				Absolute().Left(ui.Px(1.5)).Top(ui.Px(thumbTop)).
+				W(ui.Px(5)).H(ui.Px(thumbH)).
+				Rounded(ui.AbsPx(2.5)).
+				BgColor(t.Surface2))
+		list = list.Child(track)
+	}
+
+	// The list panel: fixed height (10 rows), scrolls internally. The
+	// wheel works anywhere over the panel — rows, input or padding. The
+	// fractional remainder of every delta parks in WheelAccum: a
+	// trackpad's sub-row deltas used to be truncated to zero by the
+	// integer step (the list simply refused to move), now they sum up
+	// until a whole row is reached.
+	wheel := func(ev platform.ScrollEvent, w *gpui.Window) {
+		rows := -ev.Delta.PixelDelta(geometry.Px(ui.LangMenuRowH)).Y.AsF32() / ui.LangMenuRowH
+		if rows != 0 {
+			update(func(s *Workspace) {
+				m := s.LangMenu
+				if m == nil {
+					return
+				}
+				m.WheelAccum += rows
+				step := int(m.WheelAccum) // truncates toward zero; the signed remainder stays parked
+				m.WheelAccum -= float32(step)
+				m.Scroll += step
+				maxScroll := len(filteredLanguages(m.Filter.String())) - visible
+				if maxScroll < 0 {
+					maxScroll = 0
+				}
+				if m.Scroll < 0 {
+					m.Scroll = 0
+					m.WheelAccum = 0
+				}
+				if m.Scroll > maxScroll {
+					m.Scroll = maxScroll
+					m.WheelAccum = 0
 				}
 			})
 		}
@@ -1644,72 +1729,6 @@ func pick(a gc.Hsla, cond bool, b gc.Hsla) gc.Hsla {
 		return b
 	}
 	return a
-}
-
-// langBadge renders the picker row's language badge: a rounded chip with
-// the language's short code in its theme color (the upstream editor shows language icons;
-// a text badge needs no icon font and reads at 12px).
-func langBadge(id, name string, t ui.Theme) gpui.Element {
-	code, color := langBadgeStyle(id, name, t)
-	return elements.NewDiv().
-		FlexShrink(0).
-		Flex().ItemsCenter().JustifyCenter().
-		W(ui.Px(30)).H(ui.Px(17)).Rounded(ui.AbsPx(4)).
-		BgColor(color.Alpha(0.20)).
-		TextSize(ui.AbsPx(10)).
-		Child(elements.NewText(code).WithTextColor(color))
-}
-
-// langBadgeStyle picks the badge code and color per language.
-func langBadgeStyle(id, name string, t ui.Theme) (string, gc.Hsla) {
-	switch id {
-	case "go":
-		return "GO", t.Teal
-	case "markdown":
-		return "MD", t.Mauve
-	case "c":
-		return "C", t.Accent
-	case "cpp":
-		return "C++", t.Accent
-	case "csharp":
-		return "C#", t.Green
-	case "css":
-		return "CSS", t.Sky
-	case "html":
-		return "<>", t.Orange
-	case "java":
-		return "JV", t.Orange
-	case "javascript":
-		return "JS", t.Yellow
-	case "json":
-		return "{ }", t.Peach
-	case "php":
-		return "PHP", t.Mauve
-	case "python":
-		return "PY", t.Sky
-	case "ruby":
-		return "RB", t.Red
-	case "rust":
-		return "RS", t.Peach
-	case "shell":
-		return "SH", t.Green
-	case "sql":
-		return "SQL", t.Teal
-	case "toml":
-		return "TML", t.Orange
-	case "typescript":
-		return "TS", t.Accent
-	case "xml":
-		return "XML", t.Yellow
-	case "yaml":
-		return "YML", t.Teal
-	}
-	// Fallback: the first letters of the display name.
-	up := strings.ToUpper(name)
-	if len([]rune(up)) > 3 {
-		up = up[:3]
-	}
-	return up, t.Dim
 }
 
 // renderTitleBar renders the in-app window chrome for client-side

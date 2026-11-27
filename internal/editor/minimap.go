@@ -12,12 +12,6 @@ type minimapBlock struct {
 	color    gc.Hsla
 }
 
-// minimapDragState persists the pointer anchor across frame rebuilds.
-type minimapDragState struct {
-	active    bool
-	y, target float32
-}
-
 type minimapKey struct {
 	revision uint64
 	language string

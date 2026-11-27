@@ -700,6 +700,32 @@ def main():
 	must(savePNG(hw, frame))
 	verifyInk(hw, frame)
 
+	// Language picker: the status-bar selector open over the picker's
+	// catalog — every row shows the file-type icon its files carry in
+	// the tree, and the grabbable scrollbar rides the list's right
+	// edge. The second frame parks the view mid-catalog to prove the
+	// thumb tracks the offset.
+	update(func(ws *Workspace) { ws.OpenLangMenu() })
+	a.Handle.Window.Draw()
+	if read().LangMenu == nil {
+		demo.Fatal("editor", fmt.Errorf("language menu did not open"))
+	}
+	frame = out("editor_24_lang_menu.png")
+	must(savePNG(hw, frame))
+	verifyInk(hw, frame)
+	update(func(ws *Workspace) {
+		if m := ws.LangMenu; m != nil {
+			m.Scroll = (len(filteredLanguages("")) - int(ui.LangMenuVisible)) / 2
+			m.Selected = m.Scroll
+		}
+	})
+	a.Handle.Window.Draw()
+	frame = out("editor_24b_lang_menu_scrolled.png")
+	must(savePNG(hw, frame))
+	verifyInk(hw, frame)
+	update(func(ws *Workspace) { ws.CloseLangMenu() })
+	a.Handle.Window.Draw()
+
 	// Restore the demo view (buffers and root as verifyHeadless left them).
 	update(func(ws *Workspace) {
 		ws.Buffers = oldBuffers

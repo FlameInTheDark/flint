@@ -80,7 +80,7 @@ func gomodRunsIn(line string, st LineState, p Palette) ([]text.TextRun, LineStat
 			emit(n, p.String, false)
 			i += n
 		case rest[0] == '`':
-			n, closed := scanGoRawString(rest)
+			n, closed := scanQuoted(rest, '`')
 			emit(n, p.String, false)
 			i += n
 			if !closed {

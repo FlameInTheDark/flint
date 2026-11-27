@@ -49,9 +49,6 @@ type Config struct {
 	// the OS frame (the flag reports nothing; the app checks the
 	// window's SupportsCustomDecorations).
 	CustomDecorations bool
-	// WrapInput optionally adapts native input before it reaches the window.
-	// It is not used by the synchronous headless backend.
-	WrapInput func(next func(platform.Input) platform.DispatchEventResult, dispatch func(func())) func(platform.Input) platform.DispatchEventResult
 }
 
 // App wires one example window on the selected platform.
@@ -118,9 +115,6 @@ func Start[T any](cfg Config, buildView func(w *gpui.Window, cx *app.Context[T])
 	handle, err := gpui.OpenWindowWith[T](a.App, winOpts, buildView, func(callbacks *platform.WindowCallbacks) {
 		if cfg.OnShouldClose != nil {
 			callbacks.OnShouldClose = cfg.OnShouldClose
-		}
-		if cfg.WrapInput != nil && a.Headless == nil {
-			callbacks.OnInput = cfg.WrapInput(callbacks.OnInput, plat.DispatchOnMainThread)
 		}
 	})
 	if err != nil {

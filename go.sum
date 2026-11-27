@@ -1,4 +1,6 @@
 github.com/FlameInTheDark/go-gpui v1.0.0 h1:Rqs2btW2rV0bgfIPq+VcYnPo048bsbU2TFabgY3BGqM=
 github.com/FlameInTheDark/go-gpui v1.0.0/go.mod h1:Ygjp23n4gSYBgILzXBnxi1XaUOp0+ZlFIYqeHvfU05E=
+github.com/FlameInTheDark/go-gpui v1.1.1 h1:k7u8PRZIE/FMoniIpouA9StZfZTohLB9fJbIRiDka70=
+github.com/FlameInTheDark/go-gpui v1.1.1/go.mod h1:Ygjp23n4gSYBgILzXBnxi1XaUOp0+ZlFIYqeHvfU05E=
 github.com/yuin/goldmark v1.8.7 h1:XT/tNqCIbabh0ln675w4x3dv04kQBKi8NwYqi9IJaxI=
 github.com/yuin/goldmark v1.8.7/go.mod h1:ip/1k0VRfGynBgxOz0yCqHrbZXhcjxyuS66Brc7iBKg=

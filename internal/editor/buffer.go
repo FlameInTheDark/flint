@@ -70,9 +70,8 @@ type Buffer struct {
 	// without touching the text system. Maintained by setLines/apply.
 	lineCols []int
 	// maxCols is the widest line's display column count (max of lineCols).
-	maxCols     int
-	minimap     minimapCache
-	minimapDrag minimapDragState
+	maxCols int
+	minimap minimapCache
 
 	// hlStates caches the per-line highlight start states (see
 	// LineStates): raw strings and block comments span lines, so each
@@ -86,12 +85,9 @@ type Buffer struct {
 	// highlight states; the user's folded set persists across edits keyed
 	// by header line (an edit inside a folded function keeps it folded;
 	// a header that stops opening a range drops its flag).
-	foldKey         foldKey
-	foldList        []FoldRange
-	foldFolded      map[int]bool
-	foldActive      []FoldRange
-	foldEnds        []int // prefix maximum ends of the sorted collapsed ranges
-	foldActiveValid bool
+	foldKey    foldKey
+	foldList   []FoldRange
+	foldFolded map[int]bool
 
 	// Cursor and Anchor are selection endpoints in byte offsets.
 	Cursor int
@@ -759,7 +755,6 @@ func (b *Buffer) apply(s, e int, text string) {
 			}
 		}
 		b.foldFolded = foldFix
-		b.foldActiveValid = false
 	}
 
 	// Splice the affected lines: [prefix] + split(middle) + [suffix].

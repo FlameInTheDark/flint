@@ -110,7 +110,11 @@ const (
 	TitleBarButtonW = 46.0
 	LangMenuWidth   = 320.0
 	LangMenuRowH    = 24.0
-	LangMenuVisible = 6.0 // visible rows before scrolling
+	LangMenuVisible = 10.0 // visible rows before scrolling
+	// LangMenuScrollbarW is the scrollbar's hit area inside the picker's
+	// list: the thumb paints 5px inside it, the rest is grab margin —
+	// a 4px thumb alone is nearly impossible to catch with the pointer.
+	LangMenuScrollbarW = 10.0
 
 	// Panel resize limits: the user drags the dock edges, but the docks
 	// never starve the editor (or the window chrome) below a working size.

@@ -304,15 +304,6 @@ func scanQuoted(s string, quote byte) (int, bool) {
 	return len(s), false
 }
 
-// scanGoRawString scans a backtick-delimited Go raw string. Backslashes
-// have no special meaning, including immediately before the closing tick.
-func scanGoRawString(s string) (int, bool) {
-	if end := strings.IndexByte(s[1:], '`'); end >= 0 {
-		return end + 2, true
-	}
-	return len(s), false
-}
-
 // goRuns tokenizes one line of Go source (top-of-file context).
 func goRuns(line string, p Palette) []text.TextRun {
 	runs, _ := goRunsIn(line, StateNormal, p)
@@ -372,7 +363,7 @@ func goRunsIn(line string, st LineState, p Palette) ([]text.TextRun, LineState) 
 			emit(n, p.String, false)
 			i += n
 		case rest[0] == '`':
-			n, closed := scanGoRawString(rest)
+			n, closed := scanQuoted(rest, '`')
 			emit(n, p.String, false)
 			i += n
 			if !closed {
@@ -443,7 +434,7 @@ func goScanState(line string, st LineState) LineState {
 			n, _ := scanQuoted(line[i:], '"')
 			i += n
 		case c == '`':
-			n, closed := scanGoRawString(line[i:])
+			n, closed := scanQuoted(line[i:], '`')
 			i += n
 			if !closed {
 				return StateRawString

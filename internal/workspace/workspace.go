@@ -245,10 +245,16 @@ type ConfirmState struct {
 
 // LangMenuState is the status-bar language selector: a search filter over
 // the editor's language catalog, a scroll offset and a selected row
-// (keyboard navigation; ~6 rows visible, the list scrolls).
+// (keyboard navigation; ~10 rows visible, the list scrolls).
 type LangMenuState struct {
 	Filter ui.InputState
 	Scroll int
+	// WheelAccum parks the fractional row the wheel accumulated since the
+	// last whole row moved: a trackpad sends deltas far below one row per
+	// event, and without the remainder the integer truncation would eat
+	// every one of them (the list would not move until a whole row's worth
+	// of deltas arrived inside a SINGLE event).
+	WheelAccum float32
 	// Selected is the highlighted row into the filtered list.
 	Selected int
 }
