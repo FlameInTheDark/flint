@@ -88,6 +88,12 @@ type Buffer struct {
 	foldKey    foldKey
 	foldList   []FoldRange
 	foldFolded map[int]bool
+	// Fold lookup index (see collapsedFolds): foldIndex orders the
+	// foldList positions by start line for binary search and
+	// foldCollapsed caches the collapsed subset. Both are nil whenever
+	// the ranges or the folded set changed and rebuild lazily.
+	foldIndex     []int
+	foldCollapsed []FoldRange
 
 	// Cursor and Anchor are selection endpoints in byte offsets.
 	Cursor int
@@ -755,6 +761,7 @@ func (b *Buffer) apply(s, e int, text string) {
 			}
 		}
 		b.foldFolded = foldFix
+		b.invalidateFoldIndex()
 	}
 
 	// Splice the affected lines: [prefix] + split(middle) + [suffix].

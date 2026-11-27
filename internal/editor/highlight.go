@@ -289,11 +289,15 @@ var goConstants = map[string]bool{
 }
 
 // scanQuoted scans a quoted literal from s[0] (s[0] must be the quote
-// byte), honoring backslash escapes; it returns the consumed length and
-// whether the closing quote was found.
-func scanQuoted(s string, quote byte) (int, bool) {
+// byte); it returns the consumed length and whether the closing quote was
+// found. escapes selects backslash-escape semantics: interpreted strings
+// ("...") and template literals honor them, Go raw strings do not — a
+// backslash before a backtick is literal content and the backtick still
+// closes the string (the raw-string regression: `...\` used to swallow
+// its closing backtick and spill the string across lines).
+func scanQuoted(s string, quote byte, escapes bool) (int, bool) {
 	for i := 1; i < len(s); i++ {
-		if s[i] == '\\' && i+1 < len(s) {
+		if escapes && s[i] == '\\' && i+1 < len(s) {
 			i++
 			continue
 		}
@@ -359,11 +363,11 @@ func goRunsIn(line string, st LineState, p Palette) ([]text.TextRun, LineState) 
 		case rest[0] == '"':
 			// Interpreted strings cannot span lines; an unterminated one
 			// ends at the newline.
-			n, _ := scanQuoted(rest, '"')
+			n, _ := scanQuoted(rest, '"', true)
 			emit(n, p.String, false)
 			i += n
 		case rest[0] == '`':
-			n, closed := scanQuoted(rest, '`')
+			n, closed := scanQuoted(rest, '`', false)
 			emit(n, p.String, false)
 			i += n
 			if !closed {
@@ -431,10 +435,10 @@ func goScanState(line string, st LineState) LineState {
 		c := line[i]
 		switch {
 		case c == '"':
-			n, _ := scanQuoted(line[i:], '"')
+			n, _ := scanQuoted(line[i:], '"', true)
 			i += n
 		case c == '`':
-			n, closed := scanQuoted(line[i:], '`')
+			n, closed := scanQuoted(line[i:], '`', false)
 			i += n
 			if !closed {
 				return StateRawString

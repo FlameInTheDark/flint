@@ -128,6 +128,12 @@ type PaneConfig struct {
 	// OnScroll scrolls by whole lines (positive = down). Snap paths:
 	// minimap/scrollbar seeks and caret scrolling land exactly.
 	OnScroll func(delta int)
+	// OnScrollTo seeks to an absolute first-visible line. Drag and
+	// caret-scroll listeners can belong to an older frame (pointer
+	// capture keeps delivering moves to a closure whose captured Scroll
+	// no longer matches the live position, and relative deltas then
+	// compound), so snap seeks prefer the absolute form when provided.
+	OnScrollTo func(target int)
 	// OnWheelScroll applies a raw wheel delta (fractional rows) through
 	// the workspace's smooth-scroll ease. When nil the pane falls back
 	// to OnScroll with the delta truncated to rows.
@@ -372,7 +378,12 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 			if f == nil {
 				break
 			}
-			first = min(f.End+1, max(0, total-1))
+			// Step past the whole collapsed region. A fold that
+			// ends on the document's last line steps to total
+			// (no rows left to paint); clamping back to
+			// total-1 would land inside the fold again and
+			// loop forever.
+			first = f.End + 1
 		}
 	}
 
@@ -553,7 +564,11 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 		}
 		if s != scroll {
 			final := s
-			cfg.OnScroll(final - cfg.Scroll)
+			if cfg.OnScrollTo != nil {
+				cfg.OnScrollTo(final)
+			} else {
+				cfg.OnScroll(final - cfg.Scroll)
+			}
 		}
 	}
 
@@ -901,6 +916,7 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 			ScrollX:       scrollX,
 			Folds:         foldedRanges,
 			OnScroll:      cfg.OnScroll,
+			OnScrollTo:    cfg.OnScrollTo,
 			OnWheelScroll: cfg.OnWheelScroll,
 			OnScrollX:     cfg.OnScrollX,
 			CursorLine:    cursorLine,
@@ -1113,6 +1129,10 @@ type railConfig struct {
 	Visible  int
 	ScrollX  float32
 	OnScroll func(delta int)
+	// OnScrollTo seeks to an absolute first-visible line: drag-accurate
+	// seeks (see PaneConfig.OnScrollTo). When nil, seek falls back to
+	// a relative OnScroll delta against the captured Scroll.
+	OnScrollTo func(target int)
 	// OnWheelScroll, when set, carries the rail's wheel deltas through the
 	// smooth-scroll ease (drag seeks stay on the snapped OnScroll).
 	OnWheelScroll func(deltaF float32)
@@ -1139,6 +1159,24 @@ type railConfig struct {
 // rows; for a taller one it sweeps the rail while the content slides
 // underneath. The click/drag mapping stays anchored to the rail, so
 // seeking remains stable across the whole document.
+
+// seek scrolls the rail to an absolute target line. The listeners can
+// still belong to an older frame — pointer capture keeps delivering
+// drag moves to a closure built before the scroll moved, so a relative
+// delta against the captured Scroll compounds and the pointer stops
+// tracking the thumb. The absolute listener lands exactly; callers
+// without one keep the relative fallback.
+func (cfg railConfig) seek(target int) {
+	if cfg.OnScrollTo != nil {
+		cfg.OnScrollTo(target)
+		return
+	}
+	if cfg.OnScroll == nil {
+		return
+	}
+	cfg.OnScroll(target - cfg.Scroll)
+}
+
 func renderRail(cfg railConfig) gpui.Element {
 	t := cfg.Theme
 	buf := cfg.Buf
@@ -1168,7 +1206,7 @@ func renderRail(cfg railConfig) gpui.Element {
 	// contentTop) * miniH): a click/drag under the rail lands the clicked
 	// code region under the viewport thumb.
 	seekMinimap := func(localY float32) {
-		if cfg.OnScroll == nil || maxScrollLines <= 0 {
+		if cfg.OnScroll == nil && cfg.OnScrollTo == nil || maxScrollLines <= 0 {
 			return
 		}
 		indH := float32(cfg.Visible) * miniH
@@ -1204,7 +1242,7 @@ func renderRail(cfg railConfig) gpui.Element {
 		if target > float32(maxScrollLines) {
 			target = float32(maxScrollLines)
 		}
-		cfg.OnScroll(int(target) - cfg.Scroll)
+		cfg.seek(int(target))
 	}
 
 	cacheKey := minimapKey{revision: buf.Revision, language: buf.LanguageOf(), palette: paletteOf(t), dim: t.Dim,
@@ -1376,7 +1414,7 @@ func renderRail(cfg railConfig) gpui.Element {
 		thumbTop = (min(max(cfg.ScrollF, 0), float32(maxScrollLines)) / float32(maxScrollLines)) * travel
 	}
 	seekV := func(localY float32) {
-		if travel <= 0 || cfg.OnScroll == nil {
+		if travel <= 0 || cfg.OnScroll == nil && cfg.OnScrollTo == nil {
 			return
 		}
 		ratio := (localY - thumbH/2) / travel
@@ -1386,7 +1424,7 @@ func renderRail(cfg railConfig) gpui.Element {
 		if ratio > 1 {
 			ratio = 1
 		}
-		cfg.OnScroll(int(ratio*float32(maxScrollLines)) - cfg.Scroll)
+		cfg.seek(int(ratio * float32(maxScrollLines)))
 	}
 	vscroll := elements.NewDiv().
 		ID(elements.ButtonID("vscroll")).

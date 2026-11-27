@@ -76,11 +76,11 @@ func gomodRunsIn(line string, st LineState, p Palette) ([]text.TextRun, LineStat
 			emit(end+4, p.Comment, false)
 			i += end + 4
 		case rest[0] == '"':
-			n, _ := scanQuoted(rest, '"')
+			n, _ := scanQuoted(rest, '"', true)
 			emit(n, p.String, false)
 			i += n
 		case rest[0] == '`':
-			n, closed := scanQuoted(rest, '`')
+			n, closed := scanQuoted(rest, '`', false)
 			emit(n, p.String, false)
 			i += n
 			if !closed {

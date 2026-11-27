@@ -544,6 +544,13 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 					OnScroll: func(delta int) {
 						update(func(state *Workspace) { state.setScroll(state.scroll() + delta) })
 					},
+					// Absolute seeks: drag listeners can belong to an older
+					// frame (see editor.PaneConfig.OnScrollTo), so the rail
+					// seeks land exactly instead of compounding relative
+					// deltas against a stale scroll.
+					OnScrollTo: func(target int) {
+						update(func(state *Workspace) { state.setScroll(target) })
+					},
 					OnWheelScroll: func(deltaF float32) {
 						update(func(state *Workspace) { state.addScrollDelta(deltaF) })
 					},
@@ -768,7 +775,7 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 	// -----------------------------------------------------------------------
 	onZoomActions(w)
 	if ws.completion != nil && ws.completion.buffer == ws.Buf() {
-		root = root.Child(renderCompletions(ws, t, update, winW, winH))
+		root = root.Child(renderCompletions(ws, t, update, w, winW, winH))
 	}
 	if ws.documentation != nil && ws.documentation.buffer == ws.Buf() {
 		root = root.Child(renderDocumentation(ws, t, update, w, winW, winH))

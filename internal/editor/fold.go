@@ -7,6 +7,7 @@
 package editor
 
 import (
+	"sort"
 	"strings"
 
 	gc "github.com/FlameInTheDark/go-gpui/color"
@@ -85,12 +86,18 @@ func (b *Buffer) FoldRanges() []FoldRange {
 	}
 	b.foldKey = foldKey{revision: b.Revision, lang: lang}
 	b.foldList = folds
+	b.invalidateFoldIndex()
 	// The folded set only keeps headers that still exist: an edit can
 	// turn a fold header into ordinary text.
+	pruned := false
 	for start := range b.foldFolded {
 		if _, ok := b.foldStart(start); !ok {
 			delete(b.foldFolded, start)
+			pruned = true
 		}
+	}
+	if pruned {
+		b.invalidateFoldIndex()
 	}
 	return folds
 }
@@ -260,15 +267,58 @@ func lineIndent(line string) int {
 // Fold state on the buffer
 // ---------------------------------------------------------------------------
 
+// invalidateFoldIndex drops the fold lookup index: the next query
+// rebuilds it through collapsedFolds. Every mutation of the fold list
+// or the folded set must call it.
+func (b *Buffer) invalidateFoldIndex() {
+	b.foldIndex = nil
+	b.foldCollapsed = nil
+}
+
+// collapsedFolds builds the fold lookup index: foldIndex orders the
+// ranges' positions by start line so foldStart can binary search, and
+// foldCollapsed caches the collapsed subset sorted by start. Fold
+// lookups run per painted line (foldedRangeContaining fires for every
+// row and every fold helper), so a long file with thousands of ranges
+// must not scan the whole list per query — that was the editor's
+// hottest path while scrolling folded documents.
+func (b *Buffer) collapsedFolds() {
+	b.foldIndex = make([]int, len(b.foldList))
+	for i := range b.foldList {
+		b.foldIndex[i] = i
+	}
+	sort.Slice(b.foldIndex, func(x, y int) bool {
+		return b.foldList[b.foldIndex[x]].Start < b.foldList[b.foldIndex[y]].Start
+	})
+	b.foldCollapsed = make([]FoldRange, 0, len(b.foldFolded))
+	for start := range b.foldFolded {
+		if f, ok := b.foldStart(start); ok {
+			b.foldCollapsed = append(b.foldCollapsed, f)
+		}
+	}
+	sort.Slice(b.foldCollapsed, func(x, y int) bool {
+		return b.foldCollapsed[x].Start < b.foldCollapsed[y].Start
+	})
+}
+
 // foldStart returns the range starting exactly at line (nil = not a
 // header). Callers must have called FoldRanges for the current revision.
 func (b *Buffer) foldStart(line int) (FoldRange, bool) {
-	for _, f := range b.foldList {
-		if f.Start == line {
-			return f, true
+	if b.foldIndex == nil {
+		b.collapsedFolds()
+	}
+	lo, hi := 0, len(b.foldIndex)
+	for lo < hi {
+		mid := int(uint(lo+hi) >> 1)
+		if b.foldList[b.foldIndex[mid]].Start < line {
+			lo = mid + 1
+		} else {
+			hi = mid
 		}
-		if f.Start > line {
-			break
+	}
+	if lo < len(b.foldIndex) {
+		if f := b.foldList[b.foldIndex[lo]]; f.Start == line {
+			return f, true
 		}
 	}
 	return FoldRange{}, false
@@ -287,11 +337,19 @@ func (b *Buffer) IsFolded(line int) bool {
 }
 
 // foldedRangeContaining returns the collapsed range hiding line (header
-// lines are always visible), or nil.
+// lines are always visible), or nil. The outermost enclosing collapsed
+// range wins — the first hit in start order, exactly like a scan of the
+// fold list.
 func (b *Buffer) foldedRangeContaining(line int) *FoldRange {
-	for i := range b.foldList {
-		f := &b.foldList[i]
-		if b.foldFolded[f.Start] && f.Start < line && line <= f.End {
+	if b.foldCollapsed == nil {
+		b.collapsedFolds()
+	}
+	for i := range b.foldCollapsed {
+		f := &b.foldCollapsed[i]
+		if f.Start >= line {
+			break // sorted by start: nothing later can hide line
+		}
+		if line <= f.End {
 			return f
 		}
 	}
@@ -360,6 +418,7 @@ func (b *Buffer) ToggleFold(line int) {
 		} else {
 			b.foldFolded[line] = true
 		}
+		b.invalidateFoldIndex()
 	}
 }
 
@@ -370,12 +429,16 @@ func (b *Buffer) Fold(line int) {
 	if _, ok := b.foldStart(line); ok {
 		b.ensureFoldSet()
 		b.foldFolded[line] = true
+		b.invalidateFoldIndex()
 	}
 }
 
 // Unfold expands the fold starting at line.
 func (b *Buffer) Unfold(line int) {
-	delete(b.foldFolded, line)
+	if _, folded := b.foldFolded[line]; folded {
+		delete(b.foldFolded, line)
+		b.invalidateFoldIndex()
+	}
 }
 
 // UnfoldAt expands any collapsed range hiding line (the auto-unfold when
@@ -383,6 +446,7 @@ func (b *Buffer) Unfold(line int) {
 func (b *Buffer) UnfoldAt(line int) {
 	if f := b.foldedRangeContaining(line); f != nil {
 		delete(b.foldFolded, f.Start)
+		b.invalidateFoldIndex()
 	}
 }
 
@@ -402,6 +466,7 @@ func (b *Buffer) FoldAll() {
 	for _, f := range b.foldList {
 		b.foldFolded[f.Start] = true
 	}
+	b.invalidateFoldIndex()
 }
 
 // ensureFoldSet lazily creates the folded-flag map (a freshly opened
@@ -415,6 +480,7 @@ func (b *Buffer) ensureFoldSet() {
 // UnfoldAll expands every collapsed fold.
 func (b *Buffer) UnfoldAll() {
 	b.foldFolded = map[int]bool{}
+	b.invalidateFoldIndex()
 }
 
 // FoldedCount returns the number of collapsed ranges (the status bar's

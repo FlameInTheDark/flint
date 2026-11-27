@@ -27,7 +27,42 @@ func completionKind(k int) string {
 		return "·"
 	}
 }
-func renderCompletions(ws *Workspace, t ui.Theme, update updateFn, winW, winH float32) gpui.Element {
+
+// fitCompletionText fits s into width px through the measure function
+// (the shaper's text width): newlines, carriage returns and tabs become
+// spaces, and a string wider than the column truncates to the longest
+// prefix an ellipsis still fits after — an unbroken 200-rune symbol must
+// not blow the popup's columns open or push its detail off-screen.
+// width <= 0 fits nothing.
+func fitCompletionText(s string, width float32, measure func(string) float32) string {
+	if width <= 0 {
+		return ""
+	}
+	norm := strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		return r
+	}, s)
+	if measure(norm) <= width {
+		return norm
+	}
+	runes := []rune(norm)
+	ellipsis := measure("…")
+	n := 0
+	for n < len(runes) && measure(string(runes[:n+1]))+ellipsis <= width {
+		n++
+	}
+	if n == 0 {
+		if ellipsis <= width {
+			return "…"
+		}
+		return ""
+	}
+	return string(runes[:n]) + "…"
+}
+
+func renderCompletions(ws *Workspace, t ui.Theme, update updateFn, w *gpui.Window, winW, winH float32) gpui.Element {
 	c := ws.completion
 	b := c.buffer
 	line, _ := b.OffsetToLC(b.Cursor)
@@ -52,11 +87,23 @@ func renderCompletions(ws *Workspace, t ui.Theme, update updateFn, winW, winH fl
 	}
 	y = max(float32(8), min(y, winH-height-8))
 	box := elements.NewDiv().ID(elements.ButtonID("completion-popup")).Absolute().Left(ui.Px(x)).Top(ui.Px(y)).W(ui.Px(width)).
-		Flex().FlexCol().BgColor(t.Surface).Border_1().BorderColor(t.Surface2).Rounded(ui.AbsPx(7)).OverflowHidden()
+		Flex().FlexCol().BgColor(t.Surface).Border_1().BorderColor(t.Surface2).Rounded(ui.AbsPx(7)).OverflowHidden().
+		// Opaque to input like the documentation popup: editor press,
+		// capture and scroll handlers must not fire through the popup —
+		// a row click would otherwise be captured by the editor pane's
+		// drag-select and never reach the row.
+		Occlude()
 	header := elements.NewDiv().H(ui.Px(32)).Flex().ItemsCenter().Px(ui.DefPx(12)).BorderB_1().BorderColor(t.Surface1).
 		Child(elements.NewText("SUGGESTIONS").WithTextColor(t.Accent)).Child(elements.NewDiv().FlexGrow(1)).
 		Child(elements.NewText(fmt.Sprintf("%d results", len(c.items))).WithTextColor(t.Dim))
 	box = box.Child(header)
+	// Labels and details fit their columns through the real shaper: the
+	// icon keeps its fixed 16px column, the detail settles for roughly a
+	// third of the rest, and the label gets whatever remains. Fitted
+	// text keeps long entries readable and the second row clickable even
+	// when the first label is one huge unbroken symbol.
+	measure := func(s string) float32 { return measureTextWidth(w, s, false) }
+	avail := width - 2 /*border*/ - 24 /*row padding*/ - 16 /*icon*/ - 27 /*three gaps*/
 	first := max(0, min(c.selected-rows+1, len(c.items)-rows))
 	for i := first; i < first+rows; i++ {
 		idx := i
@@ -72,13 +119,16 @@ func renderCompletions(ws *Workspace, t ui.Theme, update updateFn, winW, winH fl
 				w.Focus(ws.FocusEditor)
 				w.Refresh()
 			}).
-			Child(elements.NewDiv().W(ui.Px(16)).FlexShrink(0).Child(ui.MonoText(completionKind(item.Kind), t.Mauve))).
-			Child(elements.NewText(item.Label).WithTextColor(t.Text)).Child(elements.NewDiv().FlexGrow(1))
+			Child(elements.NewDiv().W(ui.Px(16)).FlexShrink(0).Child(ui.MonoText(completionKind(item.Kind), t.Mauve)))
+		var detailW float32
+		var detail string
 		if item.Detail != "" {
-			detail := strings.ReplaceAll(item.Detail, "\n", " ")
-			if len([]rune(detail)) > 36 {
-				detail = string([]rune(detail)[:36]) + "…"
-			}
+			detailW = avail * 0.38
+			detail = fitCompletionText(item.Detail, detailW, measure)
+		}
+		label := fitCompletionText(item.Label, avail-detailW, measure)
+		row = row.Child(elements.NewText(label).WithTextColor(t.Text)).Child(elements.NewDiv().FlexGrow(1))
+		if detail != "" {
 			row = row.Child(elements.NewText(detail).WithTextColor(t.Dim))
 		}
 		box = box.Child(row)

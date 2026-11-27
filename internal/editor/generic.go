@@ -162,7 +162,7 @@ func genericRunsIn(line string, def *genericLangDef, st LineState, p Palette) ([
 		// Strings.
 		if rest[0] == '"' || rest[0] == '\'' || rest[0] == '`' {
 			quote := rest[0]
-			n, closed := scanQuoted(rest, quote)
+			n, closed := scanQuoted(rest, quote, true)
 			emit(n, p.String, false)
 			i += n
 			if !closed {
@@ -277,7 +277,7 @@ func genericScanState(line string, def *genericLangDef, st LineState) LineState 
 			continue
 		}
 		if rest[0] == '"' || rest[0] == '\'' || rest[0] == '`' {
-			n, closed := scanQuoted(rest, rest[0])
+			n, closed := scanQuoted(rest, rest[0], true)
 			i += n
 			if !closed && rest[0] == '`' {
 				return StateRawString
