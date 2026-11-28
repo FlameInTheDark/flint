@@ -319,11 +319,11 @@ func collectTreeGit(root string) *treeGitSnapshot {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	top, err := gitCommand(ctx, git, root, true, "rev-parse", "--show-toplevel").Output()
+	top, err := gitTopLevel(ctx, git, root)
 	if err != nil {
 		return snap
 	}
-	repo := filepath.Clean(string(bytes.TrimRight(top, "\r\n")))
+	repo := top
 	cmd := gitCommand(ctx, git, repo, true,
 		"status", "--porcelain=v1", "-z", "--no-renames",
 		"--untracked-files=all", "--ignored=matching")
@@ -761,11 +761,58 @@ func detectGitRepo(dir string) string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := gitCommand(ctx, git, dir, true, "rev-parse", "--show-toplevel").Output()
+	repo, err := gitTopLevel(ctx, git, dir)
 	if err != nil {
 		return ""
 	}
-	return filepath.Clean(string(bytes.TrimRight(out, "\r\n")))
+	return repo
+}
+
+// gitTopLevel resolves the repository top containing dir, expressed with
+// dir's own path spelling. Git prints the canonical spelling (on Windows
+// it expands 8.3 short names like RUNNER~1), while the workspace keeps the
+// spelling the folder was opened with; the two then fail every path
+// comparison even though they name the same directory. --show-cdup gives
+// dir's depth below the top, so joining it back onto dir reconstructs the
+// top in the caller's spelling. If that does not resolve to the same
+// directory (symlinked paths), fall back to Git's answer.
+func gitTopLevel(ctx context.Context, git, dir string) (string, error) {
+	out, err := gitCommand(ctx, git, dir, true, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", err
+	}
+	top := filepath.Clean(strings.TrimRight(string(out), "\r\n"))
+	dir = filepath.Clean(dir)
+	if sameDir(dir, top) {
+		return dir, nil // the common case: the folder is the repository top
+	}
+	cdupOut, err := gitCommand(ctx, git, dir, true, "rev-parse", "--show-cdup").Output()
+	if err != nil {
+		return top, nil
+	}
+	cdup := strings.TrimSpace(string(cdupOut))
+	if cdup == "" {
+		return dir, nil
+	}
+	respelled := filepath.Clean(filepath.Join(dir, filepath.FromSlash(cdup)))
+	if sameDir(respelled, top) {
+		return respelled, nil
+	}
+	return top, nil
+}
+
+// sameDir reports whether two spellings name the same directory (os.SameFile
+// compares the underlying file identity, not the text).
+func sameDir(a, b string) bool {
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(ai, bi)
 }
 
 // diffEditorBuffer produces one buffer's per-line marks: the in-memory

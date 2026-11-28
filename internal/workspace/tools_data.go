@@ -198,11 +198,10 @@ func gitStatus(ctx context.Context, dir string, history bool) toolResult {
 		return toolResult{info: "Git was not found on PATH."}
 	}
 	command := func(args ...string) *exec.Cmd { return gitCommand(ctx, git, dir, true, args...) }
-	rootOut, err := command("rev-parse", "--show-toplevel").Output()
+	root, err := gitTopLevel(ctx, git, dir)
 	if err != nil {
 		return toolResult{info: "No accessible Git repository for this folder."}
 	}
-	root := filepath.Clean(string(bytes.TrimRight(rootOut, "\r\n")))
 	cmd := command("status", "--porcelain=v1", "-z", "--branch", "--no-renames", "--untracked-files=all")
 	buf := &boundedGitOutput{limit: 256 << 10}
 	cmd.Stdout = buf

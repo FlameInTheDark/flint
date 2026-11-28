@@ -24,7 +24,8 @@ func gitSh(t *testing.T, dir string, args ...string) string {
 }
 
 // newGitRepo builds a repository with one committed file and returns the
-// repo root (the fixture config pins identity and signing off).
+// repo root (the fixture config pins identity, signing off and line endings
+// so checkouts round-trip the exact bytes the tests wrote).
 func newGitRepo(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -32,6 +33,7 @@ func newGitRepo(t *testing.T) string {
 	gitSh(t, root, "config", "user.name", "Marks Test")
 	gitSh(t, root, "config", "user.email", "marks@example.test")
 	gitSh(t, root, "config", "commit.gpgsign", "false")
+	gitSh(t, root, "config", "core.autocrlf", "false")
 	return root
 }
 
