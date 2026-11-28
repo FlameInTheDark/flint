@@ -9,6 +9,7 @@ package editor
 
 import (
 	"fmt"
+	"image"
 
 	"github.com/FlameInTheDark/go-gpui/elements"
 	"github.com/FlameInTheDark/go-gpui/geometry"
@@ -53,6 +54,42 @@ const (
 	imageZoomMin = 0.05
 	imageZoomMax = 32.0
 )
+
+// imageTileSize is the largest source chunk painted through PaintImage in
+// one piece: the sprite atlas page is 1024px and tiles reserve a 1px
+// transparent padding ring, so a chunk above 1022px parks as an EMPTY tile
+// and paints nothing (the "open an image, just an empty nothing" bug — any
+// screenshot bigger than the page used to render blank). The viewer paints
+// the image as a grid of chunks that each fit a page; adjacent screen
+// rectangles share the exact float edges, so no seams appear between them.
+const imageTileSize = 1020
+
+// imageMipK picks the upload resolution for the current zoom: the smallest
+// power-of-two k with at least half a device pixel per uploaded pixel
+// (beyond that the quality loss is invisible), capped at 16. Zoomed-out
+// views of huge images upload one small mip instead of dozens of full-res
+// tiles that would blow the atlas page budget.
+func imageMipK(zoom, devScale float32, imgW, imgH int) int {
+	if imgW <= imageTileSize && imgH <= imageTileSize {
+		return 1
+	}
+	s := zoom * devScale
+	k := 1
+	for s < 0.5 && k < 16 {
+		k *= 2
+		s *= 2
+	}
+	return k
+}
+
+// lastTile returns the origin of the rightmost/bottommost chunk covering
+// [min, max) at the chunk stride (the tiling loops walk it downward).
+func lastTile(min, max int) int {
+	if max-min <= 1 {
+		return min
+	}
+	return min + (max-1-min)/imageTileSize*imageTileSize
+}
 
 // ClampImageZoom clamps a zoom factor into the viewer's range.
 func ClampImageZoom(z float32) float32 {
@@ -144,8 +181,59 @@ func RenderImagePane(cfg ImageConfig) gpui.Element {
 		func(bounds geometry.Bounds[geometry.Pixels], w *gpui.Window) {
 			cx := bounds.Origin.X.AsF32() + bounds.Size.Width.AsF32()/2
 			cy := bounds.Origin.Y.AsF32() + bounds.Size.Height.AsF32()/2
-			rect := geometry.BoundsPixels(cx-drawW/2+panX, cy-drawH/2+panY, drawW, drawH)
-			w.PaintImage(rect, geometry.ZeroCornersAbsolute().ToPixels(w.RemSize()), b.Image, false)
+			// Screen rectangle of the full image (pane coordinates).
+			left := cx - drawW/2 + panX
+			top := cy - drawH/2 + panY
+			// The image paints as a grid of atlas-page-sized chunks.
+			// A source bigger than the page cannot occupy one tile:
+			// the atlas parks it as an empty 1x1 placeholder and the
+			// viewer shows nothing. Zoomed-out views upload the mip
+			// level (a cached downscaled copy) instead of every
+			// full-res tile, bounding the atlas cost.
+			src := b.imageTileSource(imageMipK(zoom, w.ScaleFactor(), ib.Dx(), ib.Dy()))
+			srcB := src.Bounds()
+			// Source image pixels per uploaded pixel (>= 1).
+			kx := float32(imgW) / float32(srcB.Dx())
+			ky := float32(imgH) / float32(srcB.Dy())
+			bx0, bx1 := bounds.Origin.X.AsF32(), bounds.Origin.X.AsF32()+bounds.Size.Width.AsF32()
+			by0, by1 := bounds.Origin.Y.AsF32(), bounds.Origin.Y.AsF32()+bounds.Size.Height.AsF32()
+			corners := geometry.ZeroCornersAbsolute().ToPixels(w.RemSize())
+			// All normalized decodes are sub-imagerable; anything else
+			// (never produced by OpenBuffer) paints as one piece.
+			tiled, canTile := src.(subImager)
+			if !canTile {
+				w.PaintImage(geometry.BoundsPixels(left, top, drawW, drawH), corners, src, false)
+				return
+			}
+			// Chunks paint left-to-right, top-to-bottom, and each one
+			// extends a pixel past its content (clamped at the image
+			// edge): the renderer's bilinear sampler blends a sprite's
+			// right/bottom edge into the atlas tile's transparent
+			// padding ring — a ~1px dark rim — while the left/top edge
+			// clamps clean. The later-painted (on-top) chunk's clean
+			// left/top edge therefore covers the earlier chunk's rim,
+			// and chunk boundaries show no seam.
+			for ty := srcB.Min.Y; ty < srcB.Max.Y; ty += imageTileSize {
+				for tx := srcB.Min.X; tx < srcB.Max.X; tx += imageTileSize {
+					x1, y1 := min(tx+imageTileSize, srcB.Max.X), min(ty+imageTileSize, srcB.Max.Y)
+					// Cull chunks outside the pane (a huge image
+					// panned/zoomed around uploads only what is
+					// visible). The test uses the extended rect so
+					// a just-off-view chunk still covers its
+					// neighbor's edge rim.
+					ex0, ey0 := max(tx-1, srcB.Min.X), max(ty-1, srcB.Min.Y)
+					ex1, ey1 := min(x1+1, srcB.Max.X), min(y1+1, srcB.Max.Y)
+					rx0 := left + float32(ex0-srcB.Min.X)*kx*zoom
+					ry0 := top + float32(ey0-srcB.Min.Y)*ky*zoom
+					rx1 := left + float32(ex1-srcB.Min.X)*kx*zoom
+					ry1 := top + float32(ey1-srcB.Min.Y)*ky*zoom
+					if rx1 <= bx0 || rx0 >= bx1 || ry1 <= by0 || ry0 >= by1 {
+						continue
+					}
+					tile := tiled.SubImage(image.Rect(ex0, ey0, ex1, ey1))
+					w.PaintImage(geometry.BoundsPixels(rx0, ry0, rx1-rx0, ry1-ry0), corners, tile, false)
+				}
+			}
 		})
 	// Fill the pane: the canvas's default style is an auto-sized flex
 	// child (zero size inside the pane's row); flex-grow + basis 0

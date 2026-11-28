@@ -27,7 +27,7 @@ type zoomResetAction struct{ action.Unit[zoomResetAction] }
 
 func (zoomResetAction) Name() string { return "editor::ZoomReset" }
 
-// openSettingsAction opens the settings panel (ctrl-, like VSCode/the upstream editor).
+// openSettingsAction opens the settings panel (ctrl-, like the upstream editor).
 type openSettingsAction struct {
 	action.Unit[openSettingsAction]
 }

@@ -37,3 +37,21 @@ func TestLucideToolbarIconsPaint(t *testing.T) {
 		}
 	}
 }
+
+// TestToolbarIconNamesResolve guards the "invisible button" failure mode:
+// every toolbar icon id must exist in the map AND resolve to a Lucide
+// geometry — a missing entry used to render an empty <svg>, i.e. the
+// Profiler's open-file button painted as a blank gray square.
+func TestToolbarIconNamesResolve(t *testing.T) {
+	for name, lucide := range toolbarIconNames {
+		if _, ok := lucideIcons[lucide]; !ok {
+			t.Errorf("toolbarIconNames[%q] -> %q has no Lucide geometry", name, lucide)
+		}
+	}
+	// The ids the panels pass to ToolbarIcon today.
+	for _, id := range []string{"upload", "run", "stop", "close", "search"} {
+		if _, ok := toolbarIconNames[id]; !ok {
+			t.Errorf("toolbar id %q is not mapped", id)
+		}
+	}
+}

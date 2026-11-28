@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	// The stdlib decoders register themselves on image.Decode.
 	_ "image/gif"
 	_ "image/jpeg"
@@ -46,7 +47,33 @@ func DecodeImage(data []byte) (image.Image, error) {
 		return decodeBMP(data)
 	}
 	img, _, err := image.Decode(bytes.NewReader(data))
-	return img, err
+	if err != nil {
+		return nil, err
+	}
+	return normalizeImage(img), nil
+}
+
+// normalizeImage converts palette-backed decodes (GIF's *image.Paletted,
+// PNG's palette variants) into *image.NRGBA. The renderer's atlas keys an
+// image off its backing pixel-buffer identity and only knows the standard
+// storage types — a Paletted image would re-rasterize and re-upload a
+// fresh tile EVERY painted frame.
+func normalizeImage(img image.Image) image.Image {
+	switch img.(type) {
+	case *image.RGBA, *image.NRGBA, *image.Gray, *image.YCbCr, *image.Uniform:
+		return img
+	}
+	b := img.Bounds()
+	dst := image.NewNRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
+	draw.Draw(dst, dst.Bounds(), img, b.Min, draw.Src)
+	return dst
+}
+
+// subImager is the SubImage capability the stdlib image types share (the
+// standard library does not export a common interface for it). The viewer
+// tiles the image through SubImage so every atlas chunk fits a page.
+type subImager interface {
+	SubImage(r image.Rectangle) image.Image
 }
 
 // decodeBMP decodes the common BMP variants: uncompressed 1/4/8-bit
@@ -178,6 +205,60 @@ func ImageInfo(b *Buffer) string {
 	}
 	rect := b.Image.Bounds()
 	return fmt.Sprintf("%d x %d px", rect.Dx(), rect.Dy())
+}
+
+// imageTileSource returns the image the viewer uploads at the given mip
+// factor: the decoded source at k=1, else a cached downscaled copy (built
+// once per k — the paint closure runs every frame and the atlas keys off
+// the pixel buffer identity, so a fresh copy per frame would re-upload
+// tiles forever).
+func (b *Buffer) imageTileSource(k int) image.Image {
+	if b.Image == nil || k <= 1 {
+		return b.Image
+	}
+	if b.ImageLo != nil && b.ImageLoK == k {
+		return b.ImageLo
+	}
+	lo := downscaleImage(b.Image, k)
+	b.ImageLo, b.ImageLoK = lo, k
+	return lo
+}
+
+// downscaleImage box-filters an image by an integer factor k (each output
+// pixel averages the k×k source block). The result is *image.NRGBA — a
+// standard-library type whose pixel buffer identity the atlas can key on
+// (palette-backed decoders like GIF land here too, which otherwise re-
+// upload a fresh tile every frame).
+func downscaleImage(src image.Image, k int) image.Image {
+	b := src.Bounds()
+	w, h := (b.Dx()+k-1)/k, (b.Dy()+k-1)/k
+	if w <= 0 || h <= 0 {
+		return src
+	}
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			var r, g, bl, a, n uint64
+			y1 := min((y+1)*k, b.Dy())
+			x1 := min((x+1)*k, b.Dx())
+			for yy := y * k; yy < y1; yy++ {
+				for xx := x * k; xx < x1; xx++ {
+					sr, sg, sb, sa := src.At(b.Min.X+xx, b.Min.Y+yy).RGBA()
+					r += uint64(sr)
+					g += uint64(sg)
+					bl += uint64(sb)
+					a += uint64(sa)
+					n++
+				}
+			}
+			i := dst.PixOffset(x, y)
+			dst.Pix[i] = uint8(r / n >> 8)
+			dst.Pix[i+1] = uint8(g / n >> 8)
+			dst.Pix[i+2] = uint8(bl / n >> 8)
+			dst.Pix[i+3] = uint8(a / n >> 8)
+		}
+	}
+	return dst
 }
 
 func readLE16(b []byte, off int) uint16 { return uint16(b[off]) | uint16(b[off+1])<<8 }

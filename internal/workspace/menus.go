@@ -114,6 +114,10 @@ func MenuDefs(update updateFn, w *gpui.Window, quit func(), ws *Workspace) []ui.
 					Action: act(func(ws *Workspace) { ws.toggleDebug() })},
 				{Label: "Toggle Go Output", HasCheck: true, Checked: ws.ShowGoOutput, Disabled: ws.GoTask == nil,
 					Action: act(func(s *Workspace) { s.toggleGoOutput() })},
+				{Label: "Toggle Vulnerabilities", HasCheck: true, Checked: ws.ShowVulns,
+					Action: act(func(s *Workspace) { s.toggleVulns() })},
+				{Label: "Toggle Profiler", HasCheck: true, Checked: ws.ShowProfile,
+					Action: act(func(s *Workspace) { s.toggleProfile() })},
 			}
 		}},
 		{Title: "Run", Items: func() []ui.MenuItem {
@@ -132,6 +136,17 @@ func MenuDefs(update updateFn, w *gpui.Window, quit func(), ws *Workspace) []ui.
 				{Label: "Build Go Project", Shortcut: "Ctrl+F9", Action: func() { ws.startGoAction(goBuild, update, w) }},
 				{Label: "Test Go Project", Action: func() { ws.startGoAction(goTest, update, w) }},
 				{Label: "Inspect with Go vet", Action: func() { ws.startGoAction(goVet, update, w) }},
+				{Label: "Check Vulnerabilities (govulncheck)", Action: func() {
+					update(func(s *Workspace) { s.toggleVulns(); s.startVulnScan(update, w) })
+				}},
+				{Label: "Capture Profile…", Action: func() {
+					update(func(s *Workspace) {
+						if !s.ShowProfile {
+							s.toggleProfile()
+						}
+					})
+					ws.openCapturePrompt(update, w)
+				}},
 				{Separator: true},
 				{Label: "Start Go Debugging", Shortcut: "Shift+F9", Action: func() { ws.startGoAction(goDebug, update, w) }},
 				{Label: "Debug Package Tests", Action: func() { ws.startGoAction(goDebugTest, update, w) }},
@@ -266,7 +281,10 @@ func EditorContextItems(update updateFn, w *gpui.Window, ws *Workspace) []ui.Men
 }
 
 // TreeContextItems builds the project tree's context menu for a node.
-func TreeContextItems(update updateFn, ws *Workspace, node *TreeNode) []ui.MenuItem {
+// Inside a git repository a VCS section rides along — add to .gitignore
+// plus the stage/unstage/discard trio, enabled per the node's current
+// status (the explorer convention).
+func TreeContextItems(update updateFn, w *gpui.Window, ws *Workspace, node *TreeNode) []ui.MenuItem {
 	act := func(f func(*Workspace)) func() {
 		return func() { update(f) }
 	}
@@ -306,6 +324,42 @@ func TreeContextItems(update updateFn, ws *Workspace, node *TreeNode) []ui.MenuI
 			ws.copyText(relPath(ws.Root, node.Path))
 		})},
 	}
+	// VCS section: only for a real node inside a detected repository (the
+	// project root itself and empty-space menus skip it).
+	if node.Parent == nil {
+		return items
+	}
+	repo := ws.repoForNode(node)
+	if repo == "" {
+		return items
+	}
+	state := ws.treeGitNodeState(node)
+	entry := gitignorePathFor(repo, node.Path, node.IsDir)
+	stageable := state == gitUntracked || state == gitModified ||
+		state == gitStagedMod || state == gitDeleted || state == gitConflict
+	unstageable := state == gitStagedAdd || state == gitStagedMod || state == gitRenamed
+	discardable := state == gitModified || state == gitDeleted
+	items = append(items,
+		ui.MenuItem{Separator: true},
+		ui.MenuItem{Label: "Add to .gitignore", Disabled: gitignoreHas(repo, entry),
+			Action: act(func(ws *Workspace) { ws.addGitignoreEntry(repo, entry) })},
+		ui.MenuItem{Separator: true},
+		ui.MenuItem{Label: "Stage", Disabled: !stageable,
+			Action: act(func(ws *Workspace) { ws.runTreeGitAction(update, w, repo, "stage", node.Path, false) })},
+		ui.MenuItem{Label: "Unstage", Disabled: !unstageable,
+			Action: act(func(ws *Workspace) { ws.runTreeGitAction(update, w, repo, "unstage", node.Path, false) })},
+		ui.MenuItem{Label: "Discard Changes…", Disabled: !discardable,
+			Action: act(func(ws *Workspace) {
+				what := "file"
+				if node.IsDir {
+					what = "folder's uncommitted changes"
+				}
+				ws.Confirm("Discard "+what+" in \""+node.Name+"\"?", func(ws *Workspace) error {
+					ws.runTreeGitAction(update, w, repo, "discard", node.Path, true)
+					return nil
+				})
+			})},
+	)
 	return items
 }
 
@@ -384,6 +438,8 @@ func (ws *Workspace) createIn(dir, name string, isDir bool) error {
 		return err
 	}
 	ws.reloadDir(dir)
+	// A created file can be git-ignored or untracked: refresh the coloring.
+	ws.markTreeGitDirty()
 	if !isDir {
 		ws.OpenFile(p)
 	}
@@ -403,11 +459,14 @@ func (ws *Workspace) renameNode(node *TreeNode, name string) error {
 	// Keep open buffers pointing at the new path.
 	for _, b := range ws.Buffers {
 		if b.Path == node.Path {
+			ws.forgetEditorDiff(b.Path)
 			b.Path = next
 			b.Name = name
 		}
 	}
 	ws.reloadDir(filepath.Dir(node.Path))
+	// A rename moves git status around (and can leave the repository).
+	ws.markTreeGitDirty()
 	return nil
 }
 
@@ -442,10 +501,24 @@ func (ws *Workspace) deleteNode(node *TreeNode) error {
 		}
 	}
 	ws.Buffers = kept
+	// Drop the closed buffers' change-bar state (their paths are gone).
+	live := make(map[string]bool, len(kept))
+	for _, b := range kept {
+		if b.Path != "" {
+			live[diffKey(b.Path)] = true
+		}
+	}
+	for key := range ws.editorDiffs {
+		if !live[key] {
+			ws.forgetEditorDiff(key)
+		}
+	}
 	if ws.Active >= len(ws.Buffers) {
 		ws.Active = max(0, len(ws.Buffers)-1)
 	}
 	ws.reloadDir(filepath.Dir(node.Path))
+	// A deletion changes the working tree: refresh the coloring.
+	ws.markTreeGitDirty()
 	return nil
 }
 

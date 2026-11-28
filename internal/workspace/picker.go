@@ -24,6 +24,10 @@ const (
 	PickerOpenFile PickerMode = iota
 	// PickerOpenFolder selects a folder as the new workspace root.
 	PickerOpenFolder
+	// PickerLoadProfile selects a pprof profile file for the Profiler
+	// panel (the activated file is routed by the workspace, not opened
+	// in an editor tab).
+	PickerLoadProfile
 )
 
 // PickerState is the open-file/open-folder modal's state.
@@ -304,7 +308,7 @@ func pickerActivate(p *PickerState, cb PickerCallbacks, e pickerEntry, w *gpui.W
 		w.Refresh()
 		return
 	}
-	if p.Mode == PickerOpenFile {
+	if p.Mode == PickerOpenFile || p.Mode == PickerLoadProfile {
 		cb.OnOpenFile(e.Path)
 		cb.OnClose()
 		cb.RestoreFocus(w)

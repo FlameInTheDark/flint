@@ -21,9 +21,20 @@ type Palette struct {
 	Text     gc.Hsla
 	Heading  gc.Hsla
 	Link     gc.Hsla
-	// Todo colors TODO/FIXME tags inside comments (GoLand paints them
+	// Todo colors TODO/FIXME tags inside comments (paint them
 	// in a dedicated color so they jump out of gray comment text).
 	Todo gc.Hsla
+	// Brackets colors the six pair characters by nesting depth — the
+	// rainbow brackets (bracket pair colorization,
+	// colored parentheses): depth 1 takes Brackets[0], depth 2
+	// Brackets[1], cycling past the last entry. A fixed array keeps
+	// Palette comparable (it is a highlight-cache map key); an
+	// all-zero array (alpha 0) disables the repaint, so palettes
+	// built without the field keep the plain token colors.
+	Brackets [6]gc.Hsla
+	// BracketMatch is the background painted on both halves of the
+	// pair the caret sits on (the matching-bracket box).
+	BracketMatch gc.Hsla
 }
 
 // langByExt maps file extensions to highlight languages (the language
@@ -172,12 +183,12 @@ func highlightIn(line, lang string, st LineState, p Palette) ([]text.TextRun, Li
 }
 
 // todoTags are the comment tag words repainted with the palette's Todo
-// color (GoLand's default TODO/FIXME patterns, matched word-bounded and
+// color (the default TODO/FIXME patterns, matched word-bounded and
 // case-insensitively; the workspace's TODO panel scans the same tags).
 var todoTags = []string{"todo", "fixme"}
 
 // splitTodoTags repaints TODO/FIXME tag words inside comment-colored runs
-// with the palette's Todo color, bold like GoLand's TODO style. Tags only
+// with the palette's Todo color, bold. Tags only
 // repaint inside comments (the runs whose color is exactly p.Comment), so
 // "TODO" in a string literal keeps its string color. A palette without a
 // Todo color (zero alpha) skips the pass.
@@ -366,6 +377,16 @@ func goRunsIn(line string, st LineState, p Palette) ([]text.TextRun, LineState) 
 			n, _ := scanQuoted(rest, '"', true)
 			emit(n, p.String, false)
 			i += n
+		case rest[0] == '\'':
+			// Rune literals ('a', '\n', '\'', '`') tokenize like
+			// interpreted strings: escapes apply and they cannot span
+			// lines. The backtick is ordinary content here — the one-char
+			// rune literal '`' used to leak a phantom raw-string state
+			// across the rest of the file (every following line painted
+			// as a string until some later backtick appeared).
+			n, _ := scanQuoted(rest, '\'', true)
+			emit(n, p.String, false)
+			i += n
 		case rest[0] == '`':
 			n, closed := scanQuoted(rest, '`', false)
 			emit(n, p.String, false)
@@ -436,6 +457,12 @@ func goScanState(line string, st LineState) LineState {
 		switch {
 		case c == '"':
 			n, _ := scanQuoted(line[i:], '"', true)
+			i += n
+		case c == '\'':
+			// Rune literals end at the newline and never carry over
+			// (mirrors goRunsIn; a '`' inside one must not open a
+			// phantom raw string in the cross-line state either).
+			n, _ := scanQuoted(line[i:], '\'', true)
 			i += n
 		case c == '`':
 			n, closed := scanQuoted(line[i:], '`', false)

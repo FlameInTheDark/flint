@@ -1,7 +1,7 @@
 // File-type icons: official language logos (devicon — see langlogos.go)
 // for the languages the major IDEs brand, plus one Lucide-style glyph per
 // generic file type, each in a fixed accent color (brand colors work on
-// every theme, like the VS Code icon themes). Every glyph shares the same
+// every theme, like the established IDE icon themes). Every glyph shares the same
 // 24x24 stroke geometry — stroke-width 2, round caps and joins — so the
 // non-logo set reads as one family. Unknown types keep the plain document
 // glyph in the theme's dim color. Glyph geometry comes from Lucide 0.468.0
@@ -40,7 +40,7 @@ var fileTypeNames = map[string]fileIconSpec{
 // fileTypeExts maps file extensions (lowercase, with dot) to icons.
 var fileTypeExts = map[string]fileIconSpec{
 	// Brand marks: language icons use the same glyphs the major IDEs show
-	// (GoLand / Zed / VS Code icon themes), not generic shapes — the Go
+	// (the icon themes of established IDEs), not generic shapes — the Go
 	// wordmark for Go files, the two-snake mark for Python, the gear for
 	// Rust.
 	".go":   {"go-logo", "#00ADD8"},
@@ -52,7 +52,7 @@ var fileTypeExts = map[string]fileIconSpec{
 	".jsonc": {"braces", "#CBCB41"},
 
 	// Official language logos (devicon, langlogos.go): the same marks
-	// VS Code's icon themes, GoLand and Zed show for these languages.
+	// the icon themes of established IDEs show for these languages.
 	".c":        {"logo:c", "#A8B9CC"},
 	".h":        {"logo:c", "#A8B9CC"},
 	".cpp":      {"logo:cpp", "#00599C"},
@@ -192,7 +192,7 @@ var fileTypeExts = map[string]fileIconSpec{
 // fileTypeShapes holds the glyph geometry (Lucide 0.468.0 inner markup;
 // see NOTICE). Colors come from the spec, so the shapes stay plain. The
 // go-logo mark is this project's own drawing in the same stroke style,
-// matched to the mark GoLand, Zed and the VS Code icon themes show.
+// matched to the mark the established IDE icon themes show.
 //
 // The per-language marks live in langlogos.go as official devicon artwork
 // (fileTypeExts entries with a "logo:" prefix); the shapes here cover the

@@ -58,7 +58,7 @@ func TestGomodRuns(t *testing.T) {
 	if directiveColor != modPal.Keyword {
 		t.Fatalf("require not keyword-colored: %+v", directiveColor)
 	}
-	// Bare module paths render in the plain text color in GoLand's go.mod
+	// Bare module paths render in the plain text color in the go.mod
 	// editor; quoted paths (rare) take the string color.
 	if pathColor != modPal.Text {
 		t.Fatalf("module path not text-colored: %+v", pathColor)

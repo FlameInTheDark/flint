@@ -26,6 +26,7 @@ var (
 	procUpdateProcThreadAttribute         = modKernel32.NewProc("UpdateProcThreadAttribute")
 	procDeleteProcThreadAttributeList     = modKernel32.NewProc("DeleteProcThreadAttributeList")
 	procCreateProcessW                    = modKernel32.NewProc("CreateProcessW")
+	procTerminateProcess                  = modKernel32.NewProc("TerminateProcess")
 	procWaitForSingleObject               = modKernel32.NewProc("WaitForSingleObject")
 	procCloseHandle                       = modKernel32.NewProc("CloseHandle")
 )
@@ -225,11 +226,37 @@ func (c *conPTY) Wait() error {
 	return nil
 }
 
-// Close tears the pseudo console down (conhost exits, the shell's children
-// see the console closing) and releases every handle. The attribute-list
-// buffer is still referenced here via attrBuf (a uintptr alone would not
-// keep it alive for the GC).
+// conptyCloseWaitMS bounds the wait for the client process to die after
+// TerminateProcess (TerminateProcess is asynchronous; a clean exit is
+// normally instantaneous).
+const conptyCloseWaitMS = 2000
+
+// Close tears the pseudo console down and releases every handle. The
+// sequence is the deadlock-free teardown order:
+//
+//  1. a drain goroutine reads the output pipe until it errors — conhost's
+//     final flush backpressures into ClosePseudoConsole when nobody reads,
+//     and the close then blocks forever (the editor freeze on a quick
+//     open→close→open cycle);
+//  2. the client process is terminated with a bounded wait — a live shell
+//     keeps conhost alive, and ClosePseudoConsole waits for attached
+//     clients; a child ignoring the console close would otherwise hold
+//     the teardown indefinitely;
+//  3. ClosePseudoConsole, then the pipes, then the remaining handles.
+//
+// The attribute-list buffer is still referenced here via attrBuf (a
+// uintptr alone would not keep it alive for the GC).
 func (c *conPTY) Close() error {
+	go func() {
+		buf := make([]byte, 8192)
+		for {
+			if _, err := c.out.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+	procTerminateProcess.Call(uintptr(c.proc), 1)
+	procWaitForSingleObject.Call(uintptr(c.proc), conptyCloseWaitMS)
 	procClosePseudoConsole.Call(c.hpc)
 	c.hpc = 0
 	_ = c.in.Close()

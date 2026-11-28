@@ -51,6 +51,11 @@ const (
 	commandToggleTodos
 	commandFindProjectText
 	commandFindProjectStructure
+	commandToggleVulns
+	commandRunVulncheck
+	commandToggleProfile
+	commandCaptureProfile
+	commandLoadProfile
 )
 
 type commandEntry struct {
@@ -89,6 +94,11 @@ var commandEntries = []commandEntry{
 	{commandToggleGit, "View: Toggle Git", "Show working tree and staged changes", ""},
 	{commandToggleTodos, "View: Toggle TODOs", "Find TODO and FIXME comments in Go source", ""},
 	{commandProblems, "View: Toggle Problems", "Show language-server diagnostics", "Alt+6"},
+	{commandToggleVulns, "View: Toggle Vulnerabilities", "Show or hide the govulncheck panel", ""},
+	{commandRunVulncheck, "Go: Check Vulnerabilities", "Run govulncheck over the project dependencies", ""},
+	{commandToggleProfile, "View: Toggle Profiler", "Show or hide the pprof Profiler panel", ""},
+	{commandCaptureProfile, "Go: Capture Profile…", "Fetch a live profile from a running server", ""},
+	{commandLoadProfile, "Go: Open Profile File…", "Load a pprof profile into the Profiler panel", ""},
 }
 
 func (p *CommandPaletteState) visible() []commandEntry {

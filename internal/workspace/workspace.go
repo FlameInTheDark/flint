@@ -67,6 +67,8 @@ type Workspace struct {
 	ShowProblems    bool
 	ShowDebug       bool
 	ShowTodos       bool
+	ShowVulns       bool
+	ShowProfile     bool
 	ShowLineNumbers bool
 	// Term is the ACTIVE terminal (Terms[TermIdx] after normalization);
 	// Terms holds the dock's terminals (the upstream editor's terminal tabs).
@@ -82,7 +84,16 @@ type Workspace struct {
 	goInput        ui.InputState
 	debug          debugState
 	tools          toolPanels
+	vuln           vulnState
+	prof           profileState
 	diffs          map[*editor.Buffer]*diffTab
+
+	// Git working-tree decorations: the project tree's status coloring
+	// (treeGit) and the editor gutter's per-line change bars (editorDiffs,
+	// keyed by canonical buffer path). Both refresh off the UI thread
+	// (gitedit.go) — never inside a paint or a keystroke.
+	treeGit     *treeGitState
+	editorDiffs map[string]*fileDiffMarks
 
 	// Panel sizes, adjusted by dragging the dock edges (the upstream editor's docks are
 	// user-resizable). The values persist across toggles; effectiveTermHeight
@@ -119,8 +130,11 @@ type Workspace struct {
 	lastCaretActivity time.Time
 
 	// Project (a folder; "" when only files are open).
-	Root         string
-	Tree         *TreeNode
+	Root string
+	Tree *TreeNode
+	// TreeDrag is the in-flight project-tree drag (nil when idle; the
+	// gesture turns a row press into a move: see filetree.go).
+	TreeDrag     *treeDragState
 	launches     config.LaunchProfiles
 	launchRoot   string
 	launchErr    error
@@ -130,7 +144,7 @@ type Workspace struct {
 	Menu   ui.MenuState // menu bar state (Open = index or -1)
 	Popup  *ui.PopupState
 	Picker *PickerState
-	// CommandPalette is the VS Code-style action launcher opened with
+	// CommandPalette is the action launcher opened with
 	// Ctrl+Shift+P. It deliberately lives alongside the other overlays so
 	// filtering and keyboard selection survive a complete frame rebuild.
 	CommandPalette *CommandPaletteState
@@ -336,7 +350,7 @@ func (ws *Workspace) ApplyConfig(cfg config.Config) {
 	ws.Cfg = cfg
 	ws.theme = ui.ThemeByName(cfg.Appearance.Theme)
 	ws.ShowTree = cfg.General.ShowTree
-	if cfg.General.ShowTerminal && ws.Term != nil && !ws.ShowDebug && !ws.ShowTodos {
+	if cfg.General.ShowTerminal && ws.Term != nil && !ws.ShowDebug && !ws.ShowTodos && !ws.ShowVulns && !ws.ShowProfile {
 		ws.ShowTerminal = true
 	}
 	ws.ShowLineNumbers = cfg.General.ShowLineNumbers
@@ -730,7 +744,7 @@ func (ws *Workspace) paneHeight() float32 {
 	if ws.Find != nil {
 		h -= ui.FindBarHeight
 	}
-	if ws.ShowTerminal || ws.ShowGoOutput || ws.ShowProblems || ws.ShowDebug || ws.ShowTodos {
+	if ws.ShowTerminal || ws.ShowGoOutput || ws.ShowProblems || ws.ShowDebug || ws.ShowTodos || ws.ShowVulns || ws.ShowProfile {
 		h -= ws.effectiveTermHeight()
 	}
 	if h < 40 {
@@ -819,10 +833,16 @@ func (ws *Workspace) OpenFolder(path string) error {
 	ws.Root = abs
 	ws.tools.resetProject()
 	ws.ShowTodos = false
+	ws.ShowVulns = false
+	ws.ShowProfile = false
 	ws.launchEditor = nil
 	ws.loadLaunchProfiles()
 	ws.Tree = NewTree(abs)
 	ws.ShowTree = true
+	// A new folder means a new (or no) repository: reset the tree's status
+	// coloring and re-base every open buffer's change bars on the new repo.
+	ws.treeGit = nil
+	ws.invalidateEditorDiffs()
 	return nil
 }
 
@@ -876,6 +896,9 @@ func (ws *Workspace) CloseEditor() {
 	idx := ws.Active
 	ws.closeLanguage(ws.Buffers[idx])
 	ws.closeDiff(ws.Buffers[idx])
+	if ws.Buffers[idx].Path != "" {
+		ws.forgetEditorDiff(ws.Buffers[idx].Path)
+	}
 	delete(ws.markdownPreview, ws.Buffers[idx])
 	ws.completion = nil
 	ws.documentation = nil
@@ -923,6 +946,7 @@ func (ws *Workspace) Save() {
 		ws.SetPromptError(err.Error())
 	} else {
 		ws.tools.gitRefresh = true
+		ws.markTreeGitDirty()
 		if ws.languageDocs[b] != nil {
 			ws.requestLanguage(b, "save", b.Cursor, 0, 0)
 		}
@@ -935,6 +959,7 @@ func (ws *Workspace) SaveAll() {
 		if b.Path != "" && b.Dirty {
 			if b.Save() == nil {
 				ws.tools.gitRefresh = true
+				ws.markTreeGitDirty()
 				if ws.languageDocs[b] != nil {
 					ws.requestLanguage(b, "save", b.Cursor, 0, 0)
 				}
@@ -1008,11 +1033,13 @@ func (ws *Workspace) ToggleTree() {
 
 // ToggleTerminal shows/hides the terminal dock.
 func (ws *Workspace) ToggleTerminal(w *gpui.Window) {
-	if ws.ShowGoOutput || ws.ShowProblems || ws.ShowDebug || ws.ShowTodos {
+	if ws.ShowGoOutput || ws.ShowProblems || ws.ShowDebug || ws.ShowTodos || ws.ShowVulns || ws.ShowProfile {
 		ws.ShowGoOutput = false
 		ws.ShowProblems = false
 		ws.ShowDebug = false
 		ws.ShowTodos = false
+		ws.ShowVulns = false
+		ws.ShowProfile = false
 		ws.ShowTerminal = true
 	} else {
 		ws.ShowTerminal = !ws.ShowTerminal

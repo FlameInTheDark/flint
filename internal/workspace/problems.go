@@ -26,6 +26,8 @@ func (ws *Workspace) toggleProblems() {
 		ws.ShowGoOutput = false
 		ws.ShowDebug = false
 		ws.ShowTodos = false
+		ws.ShowVulns = false
+		ws.ShowProfile = false
 	}
 }
 

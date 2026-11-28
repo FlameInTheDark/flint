@@ -195,9 +195,18 @@ func nearestCaretByte(l *text.LineLayout, x geometry.Pixels) int {
 
 // caretOverlay paints over the text, using its prepaint bounds and layout
 // rather than placing a second flex element at an estimated x coordinate.
-func (l codeLine) caretOverlay(sourceByte int, lineHeight float32, color gc.Hsla) gpui.Element {
+//
+// The element is mounted for the whole cursor line regardless of the blink
+// phase: visible only controls whether the bar paints. Keeping the element
+// in the tree while hidden keeps every positional element id after the
+// editor stable across blinks (dock panels below keep their per-element
+// state — hover, tooltips — instead of resetting twice a second).
+func (l codeLine) caretOverlay(sourceByte int, lineHeight float32, color gc.Hsla, visible bool) gpui.Element {
 	index := l.displayByte(sourceByte)
 	return elements.NewCanvas(nil, func(_ geometry.Bounds[geometry.Pixels], w *gpui.Window) {
+		if !visible {
+			return
+		}
 		shaped := l.element.Layout()
 		if shaped == nil {
 			return

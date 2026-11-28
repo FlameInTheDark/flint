@@ -100,7 +100,7 @@ func runGitChange(ctx context.Context, root, operation, value string) error {
 	if err != nil {
 		return err
 	}
-	if (operation == "stage" || operation == "unstage") && !filepath.IsLocal(value) {
+	if (operation == "stage" || operation == "unstage" || operation == "discard") && !filepath.IsLocal(value) {
 		return fmt.Errorf("invalid Git path: %q", value)
 	}
 	var args []string
@@ -119,6 +119,11 @@ func runGitChange(ctx context.Context, root, operation, value string) error {
 			// index entry; never change or remove the working-tree file.
 			args = []string{"update-index", "--force-remove", "--", value}
 		}
+	case "discard":
+		// Unstaged working-tree changes: restore the path from the index
+		// (the tree menu asks for confirmation first). Untracked files are
+		// never touched here — discarding them deletes content.
+		args = []string{"checkout", "--", value}
 	case "commit":
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("enter a commit message")
@@ -184,6 +189,13 @@ func (ws *Workspace) startGitChange(root, action, value string, update updateFn,
 		}
 		if err == nil && (action == "commit" || action == "commit-push") && s.tools.gitDraft.String() == value {
 			s.tools.gitDraft.Set("")
+		}
+		// Stage/commit move files between index and HEAD: the project tree's
+		// coloring refreshes after every action, and a commit re-bases the
+		// editor's change bars (they diff the working tree against HEAD).
+		s.markTreeGitDirty()
+		if err == nil && (action == "commit" || action == "commit-push") {
+			s.invalidateEditorDiffs()
 		}
 		s.startToolLoad("git", update, w)
 	}

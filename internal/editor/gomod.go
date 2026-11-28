@@ -1,5 +1,5 @@
 // Go module files: go.mod (the module definition) and go.sum (module
-// checksums). Both get GoLand-style coloring: directives as bold keywords,
+// checksums). Both get directive-aware coloring: directives as bold keywords,
 // quoted module paths as strings, semantic versions as numbers and
 // comments as comments. go.mod shares Go's lexing rules for strings and
 // block comments (the modfile grammar quotes like Go and allows /* */ and

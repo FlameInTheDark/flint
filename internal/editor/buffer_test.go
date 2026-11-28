@@ -279,3 +279,49 @@ func testPalette() Palette {
 		Text:     gc.White(),
 	}
 }
+
+// TestNewlineIndent pins the Enter key's auto-indent: the new line
+// continues the split line's indentation, deepens one level after a
+// trailing '{' and keeps the line's own indent unit (tabs stay tabs).
+func TestNewlineIndent(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		// caret position: line index and byte column
+		line, col int
+		want      string
+	}{
+		{"keeps the line indent at end of line", "func a() {\n    x := 1\n", 1, 10, "    "},
+		{"opens a block one level deeper", "func a() {\n    if x {", 1, 11, "        "},
+		{"brace check ignores trailing spaces", "func a() {\n    if x {  ", 1, 15, "        "},
+		{"mid-line split keeps the line indent", "    return 0", 0, 10, "    "},
+		{"caret inside the leading whitespace", "        x := 1", 0, 3, "        "},
+		{"indented blank line inherits the indent", "    \n    y := 2", 0, 4, "    "},
+		{"tab-indented lines extend with tabs", "\tfunc a() {\n\t\tif x {", 1, 9, "\t\t\t"},
+		{"column 0 of a bare line stays empty", "x := 1", 0, 0, ""},
+		{"top-level line without indent", "package main", 0, 12, ""},
+	}
+	for _, c := range cases {
+		b := mk(t, c.text)
+		b.SetCursor(b.LCToOffset(c.line, c.col))
+		if got := b.NewlineIndent(); got != c.want {
+			t.Errorf("%s: NewlineIndent() = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestEnterAutoIndent runs the actual Enter insertion end to end: insert
+// the newline, then check both split halves.
+func TestEnterAutoIndent(t *testing.T) {
+	b := mk(t, "func main() {\n\tprintln(1)\n}")
+	// Cursor at the end of the "println" line; Enter must produce a
+	// tab-indented new line, not column 0.
+	b.SetCursor(b.LCToOffset(1, 12))
+	b.Insert("\n" + b.NewlineIndent())
+	if got := b.Line(2); got != "\t" {
+		t.Fatalf("new line = %q, want a single tab", got)
+	}
+	if line, _ := b.RuneLineCol(); line != 3 {
+		t.Fatalf("caret line = %d, want 3", line)
+	}
+}

@@ -81,6 +81,15 @@ type Buffer struct {
 	hlLang   string
 	hlStates []LineState
 
+	// bracketDepths caches the bracket nesting depth each line starts in
+	// (see LineBracketDepths): a pair spanning hundreds of lines colors
+	// its closer with the opener's depth without rescanning the file.
+	// Invalidated by any edit (revision) or language change, like
+	// hlStates.
+	bracketRev    uint64
+	bracketLang   string
+	bracketDepths []uint8
+
 	// Fold state: the ranges recompute per (revision, language) like the
 	// highlight states; the user's folded set persists across edits keyed
 	// by header line (an edit inside a folded function keeps it folded;
@@ -118,6 +127,13 @@ type Buffer struct {
 	DataTruncated bool
 	// Image is the decoded image of an image buffer.
 	Image image.Image
+	// ImageLo is the cached downscaled copy of Image used when the view
+	// is zoomed out (ImageLoK is its reduction factor, 0 = none). The
+	// upload resolution follows the zoom so a huge screenshot in fit
+	// mode uploads one small mip instead of dozens of full-res atlas
+	// tiles. Recomputed when the zoom crosses a mip threshold.
+	ImageLo  image.Image
+	ImageLoK int
 	// LangOverride is the status-bar language selection ("" = detect
 	// from the file name; the language picker writes it).
 	LangOverride string
@@ -300,6 +316,29 @@ func (b *Buffer) LineStates(lang string) []LineState {
 	}
 	b.hlRev, b.hlLang, b.hlStates = b.Revision, lang, states
 	return states
+}
+
+// LineBracketDepths returns the bracket nesting depth each line starts
+// in (index i is line i; depths[0] is 0) — the starting context for the
+// rainbow-bracket colors, so a pair spanning hundreds of lines paints
+// its closer with the opener's depth without rescanning the document.
+// Memoized per (revision, language) like LineStates; the scan skips the
+// same string and comment regions the tokenizers do, so brackets inside
+// literals never count. Depths saturate at 255 (deep nesting just keeps
+// cycling the palette; the colors wrap by depth regardless).
+func (b *Buffer) LineBracketDepths(lang string) []uint8 {
+	if b.bracketDepths != nil && b.bracketRev == b.Revision && b.bracketLang == lang {
+		return b.bracketDepths
+	}
+	states := b.LineStates(lang)
+	depths := make([]uint8, len(b.Lines))
+	d := 0
+	for i, line := range b.Lines {
+		depths[i] = uint8(min(d, 255))
+		_, d = bracketScanIn(line, lang, states[i], d)
+	}
+	b.bracketRev, b.bracketLang, b.bracketDepths = b.Revision, lang, depths
+	return depths
 }
 
 // locate maps a byte offset to (line, col-in-line) via binary search over
@@ -511,13 +550,265 @@ func (b *Buffer) Insert(text string) {
 	b.updateDirty()
 }
 
-// DeleteBackward deletes the selection, or one rune before the cursor.
+// indentSpaces is the editor's indent unit (the Tab key inserts it too).
+const indentSpaces = "    "
+
+// NewlineIndent returns the indentation a new line created at the cursor
+// should start with, so pressing Enter continues the block structure
+// instead of collapsing to column 0:
+//
+//   - the base is the leading whitespace of the line being split (the new
+//     line stays at the segment depth the cursor line sits at);
+//   - a caret parked inside the line's leading whitespace (or on an
+//     indented blank line) still inherits that line's full indent;
+//   - text before the caret ending in '{' deepens one level (the usual
+//     "Enter after opening brace" case), extending with the line's own
+//     unit — tabs stay tabs, spaces stay spaces.
+func (b *Buffer) NewlineIndent() string {
+	line, col := b.OffsetToLC(b.Cursor)
+	text := b.Line(line)
+	if col > len(text) {
+		col = len(text)
+	}
+	before := text[:col]
+	indent := before[:len(before)-len(strings.TrimLeft(before, " \t"))]
+	if strings.TrimLeft(before, " \t") == "" {
+		// Caret inside the indent (or the line is blank): split the
+		// line's own leading whitespace off, however deep it is.
+		indent = text[:len(text)-len(strings.TrimLeft(text, " \t"))]
+	}
+	if strings.HasSuffix(strings.TrimRight(before, " \t"), "{") {
+		unit := indentSpaces
+		if strings.Contains(indent, "\t") {
+			unit = "\t"
+		}
+		indent += unit
+	}
+	return indent
+}
+
+// indentOfLine returns the line's leading whitespace (the block indent
+// the smart keys build on).
+func indentOfLine(line string) string {
+	return line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+}
+
+// ---------------------------------------------------------------------------
+// Smart pairs: the auto-pairing keys (the auto-close behavior every
+// smart keys). Typing an opening bracket or quote inserts the closing
+// half, a closing one types over its auto-inserted twin, a selection
+// wraps, backspace inside an empty pair deletes both halves and Enter
+// between braces expands the block. Every behavior fires only in the
+// spot an editor would — never inside a word for quotes, never inside a
+// highlighted string or comment.
+// ---------------------------------------------------------------------------
+
+// isQuoteByte classifies the three quote characters that auto-pair.
+func isQuoteByte(c byte) bool { return c == '"' || c == '\'' || c == '`' }
+
+// SmartInsert applies the smart keys to one typed character. autoClose
+// off (the settings toggle) falls back to the plain insert; multi-byte
+// input (an IME composition) also inserts plainly — pairing is defined
+// for single ASCII pair characters only.
+func (b *Buffer) SmartInsert(ch string, p Palette, autoClose bool) {
+	if len(ch) != 1 {
+		b.Insert(ch)
+		return
+	}
+	c := ch[0]
+	if !autoClose {
+		b.Insert(ch)
+		return
+	}
+	if b.HasSelection() {
+		// A selection plus an opener or quote wraps the selection (the
+		// text stays selected inside the new pair).
+		if closer, ok := closerOf(c); ok {
+			b.wrapSelection(c, closer)
+			return
+		}
+		if isQuoteByte(c) {
+			b.wrapSelection(c, c)
+			return
+		}
+		b.Insert(ch)
+		return
+	}
+	// Type over: a closer (or quote) typed while the caret sits on the
+	// same character just steps over it instead of doubling it. This is
+	// also how a string is closed: the auto-inserted closing quote sits
+	// under the caret and the typed one skips past it.
+	if b.byteAt(b.Cursor) == c && (isCloserByte(c) || isQuoteByte(c)) {
+		b.Move("right", false, false, 0)
+		return
+	}
+	switch {
+	case isOpenerByte(c):
+		if !b.inStringOrCommentAt(b.Cursor, p) {
+			closer, _ := closerOf(c)
+			b.insertPair(c, closer)
+			return
+		}
+	case isQuoteByte(c):
+		if b.quoteShouldPair(c, p) {
+			b.insertPair(c, c)
+			return
+		}
+	}
+	b.Insert(ch)
+}
+
+// insertPair inserts an empty pair at the cursor with the caret between
+// the halves, as one undo op.
+func (b *Buffer) insertPair(open, closer byte) {
+	s := b.Cursor
+	text := string([]byte{open, closer})
+	b.apply(s, s, text)
+	b.Cursor = s + 1
+	b.Anchor = s + 1
+	b.pushOp(Op{Start: s, End: s + len(text), Before: "", After: text})
+}
+
+// wrapSelection surrounds the selection with the pair and keeps the
+// selection on the wrapped text (the wrap selection), as one undo op.
+func (b *Buffer) wrapSelection(open, closer byte) {
+	s, e := b.Selection()
+	before := b.rangeText(s, e)
+	text := string([]byte{open}) + before + string([]byte{closer})
+	b.apply(s, e, text)
+	b.Anchor = s + 1
+	b.Cursor = s + 1 + len(before)
+	b.pushOp(Op{Start: s, End: s + len(text), Before: before, After: text})
+}
+
+// pushOp records one undo op and clears the redo stack (the shared tail
+// of Insert and the smart-key edits).
+func (b *Buffer) pushOp(op Op) {
+	b.undo = append(b.undo, op)
+	b.redo = nil
+	b.updateDirty()
+}
+
+// quoteShouldPair gates quote pairing the way established editors do: no pair
+// inside a highlighted string or comment, after a backslash escape, or
+// mid-word — an apostrophe typed inside a word (`don't`) must stay a
+// plain quote. A quote typed right on its own twin already type-over'd
+// above, so it never reaches here.
+func (b *Buffer) quoteShouldPair(c byte, p Palette) bool {
+	if b.inStringOrCommentAt(b.Cursor, p) {
+		return false
+	}
+	line, col := b.OffsetToLC(b.Cursor)
+	text := b.Line(line)
+	if col > 0 {
+		prev := text[col-1]
+		if prev == '\\' {
+			return false // an escaped quote is content, not a pair opener
+		}
+		if isWordByte(prev) && c == '\'' {
+			return false // don't → don'''
+		}
+	}
+	if col < len(text) && isWordByte(text[col]) {
+		return false // abc|def → abc""def
+	}
+	return true
+}
+
+// inStringOrCommentAt reports whether the offset sits inside a run the
+// highlighter colors as a string or comment. Auto-pairing gates on it
+// like the usual "not in strings and comments" rule: a bracket typed inside
+// a literal is content, not code.
+func (b *Buffer) inStringOrCommentAt(off int, p Palette) bool {
+	lang := b.LanguageOf()
+	states := b.LineStates(lang)
+	line, col := b.OffsetToLC(off)
+	if line >= len(states) {
+		return false
+	}
+	disp := newCodeLine(b.Line(line))
+	db := disp.displayByte(col)
+	runs, _ := HighlightCachedIn(disp.display, lang, states[line], p)
+	pos := 0
+	for _, r := range runs {
+		if db < pos+r.Len {
+			return r.Color == p.String || r.Color == p.Comment
+		}
+		pos += r.Len
+	}
+	// The caret sits at the line's end: the position belongs to whatever
+	// the line ends with (a comment tail, a string that stops at the
+	// newline), the same classification editors give an end-of-line caret.
+	if n := len(runs); n > 0 {
+		return runs[n-1].Color == p.String || runs[n-1].Color == p.Comment
+	}
+	return false
+}
+
+// EnterBetweenPair expands the empty pair the caret sits inside — {|},
+// (|), [|] — into three lines (smart enter): the caret lands
+// on a middle line indented one level deeper, the closer keeps the
+// opening line's indentation. Returns false when the caret is not
+// between an empty pair, leaving the normal newline to the caller. One
+// undo op restores the whole expansion.
+func (b *Buffer) EnterBetweenPair() bool {
+	if b.HasSelection() {
+		return false
+	}
+	open := b.byteAt(b.Cursor - 1)
+	var closer byte
+	switch open {
+	case '{':
+		closer = '}'
+	case '(':
+		closer = ')'
+	case '[':
+		closer = ']'
+	default:
+		return false
+	}
+	if b.byteAt(b.Cursor) != closer {
+		return false
+	}
+	line, _ := b.OffsetToLC(b.Cursor)
+	indent := indentOfLine(b.Line(line))
+	unit := indentSpaces
+	if strings.Contains(indent, "\t") {
+		unit = "\t"
+	}
+	inner := indent + unit
+	s := b.Cursor
+	text := "\n" + inner + "\n" + indent
+	b.apply(s, s, text)
+	b.Cursor = s + 1 + len(inner)
+	b.Anchor = b.Cursor
+	b.pushOp(Op{Start: s, End: s + len(text), Before: "", After: text})
+	return true
+}
+
+// DeleteBackward deletes the selection, the empty pair around the
+// cursor (both halves, the smart-deletion every editor shares), or one
+// rune before the cursor.
 func (b *Buffer) DeleteBackward() {
 	if b.HasSelection() {
 		b.Insert("")
 		return
 	}
 	if b.Cursor == 0 {
+		return
+	}
+	if closer, ok := closerOf(b.byteAt(b.Cursor - 1)); ok && closer == b.byteAt(b.Cursor) {
+		// Between an empty bracket pair: remove both halves in one op.
+		b.Anchor = b.Cursor - 1
+		b.Cursor = b.Cursor + 1
+		b.Insert("")
+		return
+	}
+	if q := b.byteAt(b.Cursor - 1); isQuoteByte(q) && q == b.byteAt(b.Cursor) {
+		// Between an empty quote pair ("" '' ``): same both-halves delete.
+		b.Anchor = b.Cursor - 1
+		b.Cursor = b.Cursor + 1
+		b.Insert("")
 		return
 	}
 	sz := b.decodeRuneBefore(b.Cursor)

@@ -73,3 +73,68 @@ func TestGoRawStringBackslashesAreLiteral(t *testing.T) {
 		}
 	}
 }
+
+// TestGoRuneLiteralWithBacktick pins the one-char rune literal regression:
+// in `if c == '"' || c == '\” || c == '`' {` the backtick is ordinary
+// content of a rune literal. goRunsIn had no rune-literal case, so the
+// backtick opened a phantom raw string that swallowed the line tail and
+// leaked StateRawString — every following line painted as a string.
+func TestGoRuneLiteralWithBacktick(t *testing.T) {
+	line := "\t\tif c == '\"' || c == '\\'' || c == '`' {"
+	runs, end := HighlightIn(line, "go", StateNormal, statePal)
+	covered(t, line, runs)
+	if end != StateNormal {
+		t.Fatalf("rune literal with backtick leaked state %d (want StateNormal)", end)
+	}
+	if nextLineState(line, "go", StateNormal) != StateNormal {
+		t.Fatal("goScanState leaked a raw-string state after a '`' rune literal")
+	}
+	// The rune literal '`' is one string run; the trailing " {" stays code.
+	bt := strings.Index(line, "`")
+	pos := 0
+	litString, tailCode := false, false
+	for _, run := range runs {
+		if pos <= bt && bt < pos+run.Len {
+			litString = run.Color == statePal.String && run.Len == 3 // '`' incl. quotes
+		}
+		if pos+run.Len == len(line) {
+			tailCode = run.Color != statePal.String && run.Color != statePal.Comment
+		}
+		pos += run.Len
+	}
+	if !litString {
+		t.Fatalf("the '`' rune literal is not one string run: %+v", runs)
+	}
+	if !tailCode {
+		t.Fatalf("code after the rune literal painted as string: %+v", runs)
+	}
+
+	// The whole-file view: the line above followed by plain code — the
+	// following lines must not inherit a string state.
+	lines := []string{
+		line,
+		"\t\tdepth++",
+		"\t}",
+	}
+	buf := NewBuffer("", "example.go", strings.Join(lines, "\n"))
+	states := buf.LineStates("go")
+	for i, st := range states {
+		if st != StateNormal {
+			t.Fatalf("line %d start state = %d, want StateNormal", i, st)
+		}
+	}
+
+	// Other rune-literal shapes tokenize as one string run and end the
+	// line in the normal state.
+	for _, lit := range []string{"'a'", "'\\''", "'\\n'"} {
+		code := "r := " + lit + " // note"
+		runs, end := HighlightIn(code, "go", StateNormal, statePal)
+		covered(t, code, runs)
+		if end != StateNormal {
+			t.Fatalf("rune literal %s leaked state %d", lit, end)
+		}
+		if nextLineState(code, "go", StateNormal) != StateNormal {
+			t.Fatalf("rune literal %s leaked state in goScanState", lit)
+		}
+	}
+}

@@ -452,6 +452,11 @@ func (t *Terminal) Clear() {
 }
 
 // Close terminates the session and the whole child tree (tab close).
+// The pty teardown runs on a background goroutine: on Windows,
+// ClosePseudoConsole blocks until the attached clients exit and conhost
+// flushed its output — calling it on the UI thread froze the whole editor
+// (the "UI thread unresponsive" log) whenever the output pipe had unread
+// data, which a quick open→close→open cycle reliably produced.
 func (t *Terminal) Close() {
 	t.mu.Lock()
 	t.closed = true
@@ -459,7 +464,7 @@ func (t *Terminal) Close() {
 	t.sess = nil
 	t.mu.Unlock()
 	if s != nil {
-		_ = s.Close()
+		go func() { _ = s.Close() }()
 	}
 }
 

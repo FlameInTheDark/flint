@@ -450,25 +450,29 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 				}
 				_, caretLineWidth := ws.codeShaper.CaretMetrics(buf, t)
 				editorArea.Child(editor.RenderPane(editor.PaneConfig{
-					Buf:            buf,
-					Theme:          t,
-					Metrics:        editor.Metrics{CharAdvance: ws.CharAdvance, LineHeight: ws.LineHeight},
-					Shaper:         ws.codeShaper,
-					CaretLineWidth: caretLineWidth,
-					Scroll:         ws.scroll(),
-					ScrollF:        ws.scrollF(),
-					ScrollX:        ws.scrollX(),
-					ViewportH:      ws.paneHeight(),
-					ViewportW:      ws.paneWidth(),
-					ShowGutter:     ws.ShowLineNumbers,
-					Breakpoints:    marks,
-					ExecutionLine:  execution,
-					OnBreakpoint:   toggleBreakpoint,
-					ShowMinimap:    ws.Cfg.Editor.ShowMinimap,
-					FontSizePx:     float32(ws.Cfg.Editor.FontSize),
-					Find:           ws.Find,
-					Focus:          ws.FocusEditor,
-					CaretVisible:   ws.CaretVisible,
+					Buf:             buf,
+					Theme:           t,
+					Metrics:         editor.Metrics{CharAdvance: ws.CharAdvance, LineHeight: ws.LineHeight},
+					Shaper:          ws.codeShaper,
+					CaretLineWidth:  caretLineWidth,
+					Scroll:          ws.scroll(),
+					ScrollF:         ws.scrollF(),
+					ScrollX:         ws.scrollX(),
+					ViewportH:       ws.paneHeight(),
+					ViewportW:       ws.paneWidth(),
+					ShowGutter:      ws.ShowLineNumbers,
+					Breakpoints:     marks,
+					ExecutionLine:   execution,
+					OnBreakpoint:    toggleBreakpoint,
+					ShowMinimap:     ws.Cfg.Editor.ShowMinimap,
+					FontSizePx:      float32(ws.Cfg.Editor.FontSize),
+					AutoClosePairs:  ws.Cfg.Editor.AutoCloseEnabled(),
+					RainbowBrackets: ws.Cfg.Editor.RainbowEnabled(),
+					DiffLines:       ws.editorDiffLines(buf),
+					DiffSegments:    ws.editorDiffSegments(buf),
+					Find:            ws.Find,
+					Focus:           ws.FocusEditor,
+					CaretVisible:    ws.CaretVisible,
 					OnScrollX: func(dx float32) {
 						update(func(state *Workspace) { state.addScrollX(dx) })
 					},
@@ -661,7 +665,14 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 			ws.treeTextW[s] = v
 			return v
 		}
+		// Git working-tree coloring snapshot (read-only per frame; a
+		// nil/files-less view means no repository or still loading).
+		var treeGit TreeGitView
+		if st := ws.treeGit; st != nil {
+			treeGit = TreeGitView{Repo: st.repo, Files: st.files, Dirs: st.dirs}
+		}
 		treePanel = RenderTree(ws.Tree, t, activePath, ws.effectiveTreeWidth(), TreeCallbacks{
+			Git: treeGit,
 			Toggle: func(node *TreeNode) {
 				update(func(state *Workspace) {
 					node.Expanded = !node.Expanded
@@ -675,7 +686,7 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 				w.Focus(ws.FocusEditor)
 			},
 			Context: func(node *TreeNode, pos geometry.Point[geometry.Pixels]) {
-				openContext(TreeContextItems(update, ws, node), pos)
+				openContext(TreeContextItems(update, w, ws, node), pos)
 			},
 			Measure: measureTree,
 			Scroll:  ws.treeScrollHandle,
@@ -685,6 +696,10 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 						s.Tree.Reload()
 						s.treeTextW = nil
 					}
+					// Re-list and re-color: the manual refresh
+					// also re-runs the git status coloring.
+					s.markTreeGitDirty()
+					s.invalidateEditorDiffs()
 				})
 			},
 			CollapseAll: func() {
@@ -693,6 +708,16 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 						collapseTree(s.Tree)
 					}
 				})
+			},
+			// Tree drag-and-drop: the gesture state lives on the workspace
+			// (the element tree rebuilds every frame); the drop performs the
+			// filesystem move and reloads the affected directories.
+			Drag: func() *treeDragState { return ws.TreeDrag },
+			SetDrag: func(d *treeDragState) {
+				update(func(s *Workspace) { s.TreeDrag = d })
+			},
+			Drop: func(src, dstDir *TreeNode) {
+				update(func(s *Workspace) { s.moveTreeNode(src, dstDir) })
 			},
 			// The panel's inner edge follows the pointer while
 			// the user drags the grip (the upstream editor's dock resize).
@@ -721,6 +746,11 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 			win.Refresh()
 		})
 	}
+	// Git working-tree decorations: the project tree's status coloring and
+	// the editor gutter's change bars poll for staleness every frame and
+	// start their git subprocesses off the UI thread (never during paint).
+	ws.pollTreeGit(update, w)
+	ws.pollEditorDiffs(update, w)
 	status := renderStatusBar(ws, t, update)
 
 	// -----------------------------------------------------------------------
@@ -752,6 +782,12 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 	}
 	if ws.ShowTodos {
 		editorCol.Child(renderTodos(ws, t, update))
+	}
+	if ws.ShowVulns {
+		editorCol.Child(renderVulns(ws, t, update, w))
+	}
+	if ws.ShowProfile {
+		editorCol.Child(renderProfile(ws, t, update, w))
 	}
 	mainRow = mainRow.Child(editorCol)
 
@@ -961,7 +997,13 @@ func (ws *Workspace) Render(handle *gpui.WindowHandle[Workspace], cx *app.App, w
 				})
 			},
 			OnOpenFile: func(path string) {
-				update(func(s *Workspace) { s.OpenFile(path) })
+				update(func(s *Workspace) {
+					if s.Picker != nil && s.Picker.Mode == PickerLoadProfile {
+						s.loadProfileFile(path)
+						return
+					}
+					s.OpenFile(path)
+				})
 			},
 			OnOpenFolder: func(path string) {
 				update(func(s *Workspace) {
@@ -1257,7 +1299,7 @@ func renderConfirm(ws *Workspace, t ui.Theme, update updateFn, focusEditor func(
 // renderEmptyState is the welcome placeholder shown when no buffer is open
 // (every tab closed, fresh launch): the app title plus the three entry
 // actions - Open File, Open Folder and New File - mirroring what editors
-// like VS Code and the upstream editor show on their empty workspace.
+// like the upstream editor shows on its empty workspace.
 func renderEmptyState(ws *Workspace, t ui.Theme, update updateFn, w *gpui.Window) gpui.Element {
 	run := func(f func(*Workspace)) func(*gpui.Window) {
 		return func(*gpui.Window) {
@@ -1365,7 +1407,7 @@ func renderStatusBar(ws *Workspace, t ui.Theme, update updateFn) gpui.Element {
 			}
 			line, col := buf.RuneLineCol()
 			bar = bar.Child(elements.NewText(fmt.Sprintf("Ln %d, Col %d%s", line, col, selSuffix)).WithTextColor(t.Dim))
-			// Language selector button (VS Code-style): opens the panel
+			// Language selector button: opens the panel
 			// above the bar.
 			langBtn := elements.NewDiv().
 				ID(elements.ButtonID("status-lang-btn")).

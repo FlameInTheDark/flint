@@ -128,6 +128,8 @@ func (ws *Workspace) startGoAction(action goAction, update updateFn, w *gpui.Win
 				s.ShowProblems = false
 				s.ShowDebug = false
 				s.ShowTodos = false
+				s.ShowVulns = false
+				s.ShowProfile = false
 			}
 			return
 		}
@@ -168,6 +170,8 @@ func (ws *Workspace) startGoAction(action goAction, update updateFn, w *gpui.Win
 		s.ShowProblems = false
 		s.ShowDebug = false
 		s.ShowTodos = false
+		s.ShowVulns = false
+		s.ShowProfile = false
 		s.goOutputFollow = true
 		s.StatusError = ""
 		if s.goOutputScroll == nil {

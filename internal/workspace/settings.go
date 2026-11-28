@@ -270,6 +270,20 @@ func editorSettingsRows(ws *Workspace, t ui.Theme, update updateFn) *elements.Di
 			cfg.General.ShowLineNumbers = on
 			s.ApplyConfig(cfg)
 		})))
+
+	body = body.Child(row(t, "Rainbow Brackets", "Color bracket pairs by nesting depth and highlight the pair at the caret",
+		toggle(t, "settings-rainbow", ws.Cfg.Editor.RainbowEnabled(), update, func(s *Workspace, on bool) {
+			cfg := s.Cfg
+			cfg.Editor.DisableRainbowBrackets = !on
+			s.ApplyConfig(cfg)
+		})))
+
+	body = body.Child(row(t, "Auto-Close Pairs", "Insert the closing bracket or quote when typing the opening one",
+		toggle(t, "settings-autoclose", ws.Cfg.Editor.AutoCloseEnabled(), update, func(s *Workspace, on bool) {
+			cfg := s.Cfg
+			cfg.Editor.DisableAutoClosePairs = !on
+			s.ApplyConfig(cfg)
+		})))
 	return body
 }
 

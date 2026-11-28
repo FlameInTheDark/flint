@@ -362,6 +362,41 @@ func verifyHeadless(a *demo.App[Workspace], cx *app.App) {
 	demo.Printf("editor", "26 frames rendered: tabs, caret, selection, edit/undo, menus with hover-switching while open, context menu, find, terminal, project panel, debug panel with icon controls, name tooltips and underline tabs, visible draggable scrollbars (vertical + horizontal), dock resizes, problems, structure tool, git panel with plus/minus stage actions, file-type icons in the project tree, go.mod/go.sum highlighting, code folding with gutter chevrons and inline placeholders, TODO tag highlighting, python indent folds; dock resizes verified")
 }
 
+// waitForEditorMarks blocks until the open file's git change bars settle
+// (the marks compute debounces its subprocess) or a timeout passes, drawing
+// frames so the debounced apply re-renders. Headless-only helper: the live
+// app repaints through its own loop.
+func waitForEditorMarks(a *demo.App[Workspace], read func() *Workspace, path string) {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		ws := read()
+		b := ws.Buf()
+		if b != nil && sameFilePath(b.Path, path) {
+			if st := ws.editorDiffs[diffKey(b.Path)]; st != nil && st.rev == b.Revision {
+				a.Handle.Window.Draw()
+				return
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+		a.Handle.Window.Draw()
+	}
+}
+
+// waitForTreeGit blocks until the project tree's git coloring settles (the
+// status subprocess runs off the UI thread) or a timeout passes, drawing
+// frames so the applied coloring re-renders. Headless-only helper.
+func waitForTreeGit(a *demo.App[Workspace], read func() *Workspace) {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if st := read().treeGit; st != nil && st.tried && st.repo != "" {
+			a.Handle.Window.Draw()
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+		a.Handle.Window.Draw()
+	}
+}
+
 // verifyRealProject renders the project passed via the FLINT_HEADLESS_PROJECT
 // environment variable: its file tree with the per-type icons, a Go entry
 // file with TODO tag colors and fold chevrons, a folded view of the same
@@ -386,10 +421,53 @@ func verifyRealProject(a *demo.App[Workspace], update func(f func(*Workspace)), 
 	var openErr error
 	update(func(ws *Workspace) { openErr = ws.OpenFolder(abs) })
 	must(openErr)
+	waitForTreeGit(a, read)
+	if st := read().treeGit; st == nil || st.repo == "" {
+		demo.Fatal("editor", fmt.Errorf("the project tree did not detect %s as a git repository", abs))
+	}
 	a.Handle.Window.Draw()
 	frame := out("repo_01_tree_icons.png")
 	must(savePNG(hw, frame))
 	verifyInk(hw, frame)
+
+	// Frame R1b: the tree's VCS context menu over the first changed file —
+	// add to .gitignore plus the stage/unstage/discard trio, enabled per the
+	// node's status. The popup must carry the section when a repository is
+	// open (the plain actions above it stay untouched).
+	var menuNode *TreeNode
+	if st := read().treeGit; st != nil {
+		for path, state := range st.files {
+			if state == gitModified || state == gitUntracked {
+				menuNode = read().Tree.Find(path)
+				break
+			}
+		}
+	}
+	if menuNode != nil {
+		if hb, ok := hitboxByKey(a, "n:btn-tree-"+menuNode.Path); ok {
+			rightClick(hw, centerOf(hb))
+			a.Handle.Window.Draw()
+			if popup := read().Popup; popup == nil {
+				demo.Fatal("editor", fmt.Errorf("the tree row's right-click opened no context menu"))
+			} else {
+				found := map[string]bool{}
+				for _, item := range popup.Items {
+					found[item.Label] = true
+				}
+				for _, want := range []string{"Add to .gitignore", "Stage", "Unstage", "Discard Changes…"} {
+					if !found[want] {
+						demo.Fatal("editor", fmt.Errorf("the tree's VCS menu lacks %q (items: %v)", want, found))
+					}
+				}
+			}
+			frame = out("repo_01c_tree_vcs_menu.png")
+			must(savePNG(hw, frame))
+			verifyInk(hw, frame)
+			// Dismiss the popup so the later frames stay clean.
+			key(hw, "escape", false)
+			a.Handle.Window.Draw()
+		}
+	}
 
 	// Frame R2: the repository's entry file — TODO tags in orange, fold
 	// chevrons in the gutter.
@@ -406,6 +484,10 @@ func verifyRealProject(a *demo.App[Workspace], update func(f func(*Workspace)), 
 	if lang := read().Buf().LanguageOf(); lang != "go" {
 		demo.Fatal("editor", fmt.Errorf("%s detected as %q", goFile, lang))
 	}
+	// The git change bars debounce their diff subprocess (one per typing
+	// pause, never per keystroke): give the first compute time to land so
+	// the captured frame shows the settled gutter.
+	waitForEditorMarks(a, read, goFile)
 	if len(read().Buf().FoldRanges()) == 0 {
 		demo.Fatal("editor", fmt.Errorf("%s produced no fold ranges", goFile))
 	}
@@ -809,6 +891,13 @@ func verifyGitPanel(a *demo.App[Workspace], update func(f func(*Workspace)), hw 
 	must(os.WriteFile(filepath.Join(repo, "notes.txt"), []byte("untracked scratch notes\n"), 0o644))
 
 	oldRoot := read().Root
+	// Preserve the ORIGINAL dispatch hook (Run's serialized queue in
+	// headless runs): the temporary SetEnv(nil, nil, nil) below forces the
+	// status scan inline for determinism, and the restore at the end must
+	// put the serialized hook back — restoring the raw platform dispatch
+	// let background completions run on their own goroutines and race the
+	// scene driver's paints (a fatal concurrent map access).
+	origDispatch := read().dispatch
 	// The status scan normally mutates workspace state from its background
 	// goroutine (headless dispatch runs inline on the caller), racing this
 	// loop's Draw. Swap the dispatch hook out so the tool load runs on this
@@ -833,7 +922,13 @@ func verifyGitPanel(a *demo.App[Workspace], update func(f func(*Workspace)), hw 
 					pw.WriteClipboard(item)
 				}
 			},
-			func(f func()) { a.Platform.DispatchOnMainThread(f) },
+			func(f func()) {
+				if origDispatch != nil {
+					origDispatch(f)
+					return
+				}
+				a.Platform.DispatchOnMainThread(f)
+			},
 			func() { a.Platform.Quit() },
 		)
 	})
@@ -870,7 +965,7 @@ type Config struct {
 	must(os.WriteFile(helperPath, []byte(helperSrc), 0o644))
 
 	// Synthetic paused snapshot: mixed data types so the value coloring and
-	// expandable tree render like a real Delve stop (GoLand-style inspect).
+	// expandable tree render like a real Delve stop (an inspect-style view).
 	snap := debugger.Snapshot{
 		State:    debugger.Paused,
 		Detail:   "breakpoint hit",
@@ -1022,7 +1117,7 @@ type Config struct {
 	// Drag the horizontal thumb rightwards: the wide values pan into
 	// view. The long row sits below the fold, so wheel it into view
 	// first — only rows wider than the pan offset reach into the panned
-	// viewport (the short rows scroll out left, GoLand-style).
+	// viewport (the short rows scroll out left instead of being clipped).
 	hw.DispatchInput(platform.ScrollEvent{Position: centerOf(varsBox), Delta: platform.ScrollDeltaPixels(0, -4000)})
 	a.Handle.Window.Draw()
 	hY := float32(hBar.Bounds.Origin.Y) + 5

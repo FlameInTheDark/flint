@@ -163,6 +163,7 @@ func (ws *Workspace) toggleTodos(update updateFn, w *gpui.Window) {
 	ws.ShowTodos = !ws.ShowTodos
 	if ws.ShowTodos {
 		ws.ShowDebug, ws.ShowTerminal, ws.ShowProblems, ws.ShowGoOutput = false, false, false, false
+		ws.ShowVulns, ws.ShowProfile = false, false
 		if ws.tools.todoScroll == nil {
 			ws.tools.todoScroll = elements.NewScrollHandle()
 		}
@@ -199,8 +200,10 @@ func renderToolRail(ws *Workspace, t ui.Theme, update updateFn, project func(*gp
 		Child(icon("terminal", "Toggle terminal (Ctrl+`)", ws.ShowTerminal, func(w *gpui.Window) { update(func(s *Workspace) { s.ToggleTerminal(w) }) })).
 		Child(icon("problems", "Problems (Alt+6)", ws.ShowProblems, bottom(func(s *Workspace, _ *gpui.Window) { s.toggleProblems() }))).
 		Child(icon("debug", "Toggle Go Debug", ws.ShowDebug, bottom(func(s *Workspace, _ *gpui.Window) { s.toggleDebug() }))).
-		Child(icon("todo", "TODOs · Go source comments", ws.ShowTodos, bottom(func(s *Workspace, w *gpui.Window) { s.toggleTodos(update, w) })))
-	dockCount := 4
+		Child(icon("todo", "TODOs · Go source comments", ws.ShowTodos, bottom(func(s *Workspace, w *gpui.Window) { s.toggleTodos(update, w) }))).
+		Child(icon("vulns", "Vulnerabilities · govulncheck", ws.ShowVulns, bottom(func(s *Workspace, _ *gpui.Window) { s.toggleVulns() }))).
+		Child(icon("profile", "Profiler · pprof", ws.ShowProfile, bottom(func(s *Workspace, _ *gpui.Window) { s.toggleProfile() })))
+	dockCount := 6
 	if ws.GoTask != nil {
 		dockTools.Child(icon("output", "Go task output", ws.ShowGoOutput, bottom(func(s *Workspace, _ *gpui.Window) { s.toggleGoOutput() })))
 		dockCount++

@@ -2,7 +2,7 @@
 // its files get in the file tree — for the branded languages the official
 // devicon logo (langlogos.go: the Go wordmark, the Python two-snake mark,
 // the Rust gear, the Java coffee cup, the JS/TS badges, and so on — the
-// same family VS Code's icon themes, GoLand and Zed draw from), for the
+// same family the established IDE icon themes draw from), for the
 // generic formats the matching Lucide-style glyph (braces for JSON, lists
 // for YAML, and so on). Unknown languages keep the plain document glyph
 // in the theme's dim color — exactly like an unrecognized file in the

@@ -18,7 +18,7 @@ func withTempDir(t *testing.T) string {
 func TestDefaults(t *testing.T) {
 	cfg := Default()
 	if cfg.General.ShowTree != true {
-		t.Fatal("default show_tree must be true (the upstream editor/VSCode show the project panel)")
+		t.Fatal("default show_tree must be true (the upstream editor shows the project panel)")
 	}
 	if cfg.Editor.TabSize != 4 || cfg.Editor.ShowMinimap != true {
 		t.Fatal("editor defaults: tab 4, minimap on")

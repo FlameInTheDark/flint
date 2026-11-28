@@ -48,6 +48,7 @@ func (ws *Workspace) showDebug() {
 	ws.ShowDebug = true
 	ws.ShowTerminal, ws.ShowGoOutput, ws.ShowProblems = false, false, false
 	ws.ShowTodos = false
+	ws.ShowVulns, ws.ShowProfile = false, false
 	if ws.debug.breaks == nil {
 		ws.debug.resetPanel("Breakpoints")
 	}
@@ -262,7 +263,7 @@ func (ws *Workspace) debugControl(action debugger.Action) {
 }
 
 // debugIconButton renders a compact square toolbar button with a Lucide
-// icon instead of a text label — GoLand's debugger toolbar look. The
+// icon instead of a text label — a debugger toolbar look. The
 // action name moves into the tooltip since the icon replaces the label.
 func debugIconButton(t ui.Theme, id, icon string, col gc.Hsla, click func(*gpui.Window), tip string) *elements.Div {
 	d := elements.NewDiv().ID(elements.ButtonID(id)).Flex().ItemsCenter().JustifyCenter().W(ui.Px(26)).H(ui.Px(24)).FlexShrink(0).
@@ -283,8 +284,8 @@ func debugList(id string, h *elements.ScrollHandle, onScroll func(), stored *flo
 
 // debugHList is debugList with horizontal panning for the debug segments:
 // rows attach to a content column sized to the widest row, so wide values
-// overflow the segment and wheel / shift-wheel pans across them (GoLand's
-// variables view) instead of being clipped inside their row. storedLeft
+// overflow the segment and wheel / shift-wheel pans across the whole view
+// instead of being clipped inside their row. storedLeft
 // keeps the pan offset across frames like stored does vertically.
 func debugHList(id string, h *elements.ScrollHandle, onScroll func(), stored, storedLeft *float32, w *gpui.Window) *debugListEl {
 	return newDebugList(id, h, onScroll, stored, storedLeft, w)
@@ -583,7 +584,7 @@ func debugRow(label string, col gc.Hsla) *elements.Div {
 }
 
 // debugRunsRow is a 20px monospaced row with pre-styled runs (the
-// GoLand-style variable/frame rendering: name, value and type each carry
+// Colored variable/frame rendering: name, value and type each carry
 // their own code color). The builder owns both the value string and the
 // runs (a Text element needs them paired).
 func debugRunsRow(b *runBuilder) *elements.Div {
@@ -647,7 +648,7 @@ func (b *runBuilder) width(w *gpui.Window) float32 {
 
 // debugValueMax caps a variable's rendered value: delve prints large
 // strings and deep composites in full, which would make rows overflow the
-// segment for screens of text (GoLand truncates with an ellipsis too).
+// segment for screens of text (oversized values truncate with an ellipsis).
 const debugValueMax = 240
 
 // formatDebugValue sanitizes and truncates a Delve-printed value for one
@@ -680,8 +681,8 @@ func isDebugIdentRune(r rune, first bool) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
-// debugValueRuns colors a Delve-printed value like Go code (the GoLand
-// debugger's syntax-aware values): string and rune literals green, numbers
+// debugValueRuns colors a Delve-printed value like Go code (syntax-aware
+// values): string and rune literals green, numbers
 // peach, true/false/nil keyword mauve, field and map keys teal, composite
 // type names peach, pointer addresses dim, punctuation subdued.
 func debugValueRuns(b *runBuilder, value string, t ui.Theme) {
@@ -756,7 +757,7 @@ func debugValueRuns(b *runBuilder, value string, t ui.Theme) {
 			i = j
 		default:
 			// Brackets, commas, colons, spaces: structural noise, subdued so
-			// the data stands out (GoLand renders punctuation dimmer too).
+			// the data stands out (punctuation renders dimmer on purpose).
 			b.add(string(r), t.Dim)
 			i++
 		}
@@ -767,7 +768,7 @@ func isHexDigit(r rune) bool {
 	return unicode.IsDigit(r) || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
 }
 
-// debugVarRuns renders one variable row the GoLand way:
+// debugVarRuns renders one variable row with the colored-run style:
 //
 //	name = <value colored by data type>   (type in italic)
 //
@@ -786,8 +787,8 @@ func debugVarRuns(v debugger.Variable, t ui.Theme, arrow string) *runBuilder {
 }
 
 // debugFrameRuns renders a call-stack row: the file:line reference in the
-// link color, the function name in the code function color (GoLand's
-// frames read like source references).
+// link color, the function name in the code function color (frames read
+// like source references).
 func debugFrameRuns(path, fn string, line int, t ui.Theme, selected bool) *runBuilder {
 	b := &runBuilder{}
 	if path != "" {
@@ -862,7 +863,7 @@ func renderDebug(ws *Workspace, snap debugger.Snapshot, t ui.Theme, update updat
 		addControl("stop", "square", "Stop", t.Red, func(*gpui.Window) { s.Stop() })
 	}
 	controls.Child(debugIconButton(t, "debug-hide", "x", t.Dim, func(*gpui.Window) { update(func(ws *Workspace) { ws.ShowDebug = false }) }, "Hide debugger panel"))
-	// GoLand-style underline tabs: the active tab keeps the panel
+	// Underline tabs: the active tab keeps the panel
 	// background with an accent underline; inactive tabs dim and light up
 	// on hover. Selection acts on mouse-down (see the editor tab strip:
 	// a tree rebuild mid-click can never drop the press).
@@ -957,7 +958,7 @@ func renderDebug(ws *Workspace, snap debugger.Snapshot, t ui.Theme, update updat
 
 // debugSegment assembles one Inspect column: a fixed header (title plus an
 // optional annotation) over an independently scrolling list — each segment
-// scrolls on its own like GoLand's debugger views, and the headers stay
+// scrolls on its own (the headers stay
 // visible while the content moves.
 func debugSegment(id, title, note string, list *elements.Div, t ui.Theme) *elements.Div {
 	header := elements.NewDiv().ID(ui.StructID("debug-seg-head-" + id)).Flex().ItemsCenter().H(ui.Px(24)).FlexShrink(0).Px(ui.DefPx(10)).Gap(ui.DefPx(8)).BgColor(t.Surface).BorderB_1().BorderColor(t.Surface1).TextSize(ui.AbsPx(11))
@@ -1035,7 +1036,7 @@ func debugExpandable(list *debugListEl, ws *Workspace, snap debugger.Snapshot, t
 	debugExpandableVar(list, ws, snap, t, update, v, depth-1, count)
 }
 
-// debugExpandableVar renders one variable row: the GoLand-style colored
+// debugExpandableVar renders one variable row: the colored
 // runs, tree indentation per depth, hover highlight, and click-to-expand
 // when Delve reports nested children (VariablesReference > 0).
 func debugExpandableVar(list *debugListEl, ws *Workspace, snap debugger.Snapshot, t ui.Theme, update updateFn, v debugger.Variable, depth int, count *int) {

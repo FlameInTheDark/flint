@@ -15,9 +15,9 @@ import (
 	"github.com/FlameInTheDark/go-gpui/platform/headless"
 )
 
-func TestIntelliJThemeIsDefaultButSavedThemeIsPreserved(t *testing.T) {
+func TestFlintThemeIsDefaultButSavedThemeIsPreserved(t *testing.T) {
 	t.Setenv("GO_GPUI_CONFIG_DIR", t.TempDir())
-	if got := config.Default().Appearance.Theme; got != "IntelliJ Dark" {
+	if got := config.Default().Appearance.Theme; got != "Flint Dark" {
 		t.Fatalf("default theme = %q", got)
 	}
 	cfg := config.Default()

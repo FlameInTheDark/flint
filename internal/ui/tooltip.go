@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"github.com/FlameInTheDark/go-gpui/color"
 	"github.com/FlameInTheDark/go-gpui/elements"
 	"github.com/FlameInTheDark/go-gpui/gpui"
 )
@@ -29,6 +30,51 @@ func Tooltip(text string) func(*gpui.Window) gpui.Element {
 	return func(*gpui.Window) gpui.Element {
 		tt := elements.NewTooltip(text)
 		tt.Rounded(AbsPx(6)) // mutates the embedded div; the wrapper keeps Prepaint/Paint
+		return tt
+	}
+}
+
+// tooltip colors mirror elements.NewTooltip's surface so both tooltip
+// styles read as one chrome family.
+var (
+	tooltipBg     = color.RGB(0x262b35).Hsla()
+	tooltipBorder = color.RGB(0x535a67).Hsla()
+	tooltipTitle  = color.RGB(0xf3f5f8).Hsla()
+	tooltipBody   = color.RGB(0xaab3c2).Hsla()
+	tooltipHint   = color.RGB(0x7d8796).Hsla()
+)
+
+// TooltipRich builds a multi-line tooltip for Div.TooltipBuilder: a plain
+// title row, optional mono body rows and an optional trailing hint row.
+//
+// The text system shapes a Text element as ONE line — a "\n" inside the
+// string paints as a missing-glyph bar (the profiler's tooltips rendered
+// as a window-wide strip), so every line is its own element and the
+// builder composes them vertically. Lines never wrap: they clip, and the
+// surface caps at 460px so a long source path can't cover the panel.
+//
+//	elements.NewDiv()...TooltipBuilder(ui.TooltipRich(name, []string{"main.go:12"}, "Click: zoom"))
+func TooltipRich(title string, body []string, hint string) func(*gpui.Window) gpui.Element {
+	return func(*gpui.Window) gpui.Element {
+		tt := elements.NewDiv().
+			MinW_0().MaxW(Px(460)).
+			Flex().FlexCol().Gap(DefPx(3)).
+			BgColor(tooltipBg).Border_1().BorderColor(tooltipBorder).
+			Rounded(AbsPx(6)).ShadowMd().
+			Px(DefPx(10)).Py(DefPx(6))
+		tt.Child(elements.NewDiv().MinW_0().OverflowHidden().WhitespaceNowrap().
+			Child(elements.NewText(title).WithTextColor(tooltipTitle)))
+		for _, line := range body {
+			if line == "" {
+				continue
+			}
+			tt.Child(elements.NewDiv().MinW_0().OverflowHidden().WhitespaceNowrap().
+				Child(MonoText(line, tooltipBody)))
+		}
+		if hint != "" {
+			tt.Child(elements.NewDiv().MinW_0().OverflowHidden().WhitespaceNowrap().TextSize(AbsPx(11)).
+				Child(elements.NewText(hint).WithTextColor(tooltipHint)))
+		}
 		return tt
 	}
 }

@@ -14,7 +14,7 @@ func ThemeNames() []string {
 		"Tokyo Night",
 		"Tokyo Night Light",
 		"Gruvbox Dark",
-		"IntelliJ Dark",
+		"Flint Dark",
 	}
 }
 
@@ -22,9 +22,12 @@ func ThemeNames() []string {
 // back to the default so a hand-edited settings file can never produce a
 // zeroed palette.
 func ThemeByName(name string) Theme {
+	// The dark neutral theme used to ship under a product-derived name; it
+	// is "Flint Dark" now. Settings saved with an unknown name fall back to
+	// the default palette, so nothing here needs the old name back.
 	switch name {
-	case "IntelliJ Dark":
-		return intellijDarkTheme()
+	case "Flint Dark":
+		return flintDarkTheme()
 	case "Catppuccin Latte":
 		return latteTheme()
 	case "Tokyo Night":
@@ -38,9 +41,9 @@ func ThemeByName(name string) Theme {
 	}
 }
 
-// intellijDarkTheme uses neutral layered surfaces and restrained accents,
-// inspired by the new IntelliJ UI. Existing named palettes remain unchanged.
-func intellijDarkTheme() Theme {
+// flintDarkTheme uses neutral layered surfaces and restrained accents.
+// Existing named palettes remain unchanged.
+func flintDarkTheme() Theme {
 	return Theme{
 		EditorBg: gc.RGB(0x1E1F22).Hsla(), Surface: gc.RGB(0x2B2D30).Hsla(),
 		Surface1: gc.RGB(0x393B40).Hsla(), Surface2: gc.RGB(0x4E5157).Hsla(),

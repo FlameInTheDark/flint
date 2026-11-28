@@ -9,7 +9,7 @@ import (
 
 // TestLanguageIconsCoverCatalog pins the language picker's icon rule: every
 // language in the catalog must resolve to a real file-type glyph (the same
-// one the file tree shows for that language's files — GoLand/Zed/VS Code
+// one the file tree shows for that language's files — the same mark the
 // style), never to the fallback document glyph. A new catalog entry
 // without a mapping breaks this test on purpose: a text badge or a
 // generic glyph in the picker is exactly what the icons round removed.

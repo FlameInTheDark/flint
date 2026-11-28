@@ -37,7 +37,24 @@ type Editor struct {
 	TabSize int `json:"tab_size"`
 	// ShowMinimap toggles the minimap rail right of the code.
 	ShowMinimap bool `json:"show_minimap"`
+	// DisableRainbowBrackets turns the depth-colored bracket pairs and
+	// the matching-bracket highlight off. The flag is inverted so a
+	// settings file saved before the feature existed (the key absent,
+	// false) keeps the feature enabled.
+	DisableRainbowBrackets bool `json:"disable_rainbow_brackets"`
+	// DisableAutoClosePairs turns the smart auto-pairing keys off:
+	// typing ( no longer inserts the closing half, selections do not
+	// wrap, closers do not type over. Same inverted-default reasoning.
+	DisableAutoClosePairs bool `json:"disable_auto_close_pairs"`
 }
+
+// RainbowEnabled reports whether the depth-colored bracket pairs are on
+// (the Disable flags are inverted so a settings file saved before the
+// feature existed keeps it enabled).
+func (e Editor) RainbowEnabled() bool { return !e.DisableRainbowBrackets }
+
+// AutoCloseEnabled reports whether the smart auto-pairing keys are on.
+func (e Editor) AutoCloseEnabled() bool { return !e.DisableAutoClosePairs }
 
 // Terminal holds the dock's shell behavior.
 type Terminal struct {
@@ -94,7 +111,7 @@ func Default() Config {
 			Scrollback: 5000,
 		},
 		Appearance: Appearance{
-			Theme: "IntelliJ Dark",
+			Theme: "Flint Dark",
 		},
 	}
 }

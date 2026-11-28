@@ -23,7 +23,7 @@ func TestInputCaretFollowsShapedText(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := h.Window
-	theme := ThemeByName("IntelliJ Dark")
+	theme := ThemeByName("Flint Dark")
 	const fieldWidth = 250
 	var input InputState
 	input.Set("examples/éWii")
@@ -73,7 +73,7 @@ func TestInputSelectionAndClipboard(t *testing.T) {
 		t.Fatal(err)
 	}
 	w, hw := h.Window, hp.LastWindow()
-	theme := ThemeByName("IntelliJ Dark")
+	theme := ThemeByName("Flint Dark")
 	focus := gpui.NewFocusHandle()
 	var input InputState
 	input.Set("éWii one")

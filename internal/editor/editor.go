@@ -152,9 +152,25 @@ type PaneConfig struct {
 	OnKey func(platform.KeyDownEvent) bool
 	// OnDefinition requests the definition of the Ctrl-clicked symbol.
 	OnDefinition func(offset int)
+	// AutoClosePairs drives the smart auto-pairing keys (typing ( inserts
+	// the closing half, selections wrap). The settings panel toggles it.
+	AutoClosePairs bool
+	// RainbowBrackets enables the depth-colored bracket pairs and the
+	// caret's matching-bracket highlight (the settings panel toggles it).
+	RainbowBrackets bool
 	// CaretVisible drives the blinking caret (the workspace flips it on a
 	// timer and forces it on around cursor activity).
 	CaretVisible bool
+	// DiffLines carries the buffer's per-line git working-tree marks
+	// (1-based line → kind) for the gutter's change bars; nil or empty
+	// shows no marks (no repository, clean file, or the async diff has
+	// not landed yet).
+	DiffLines map[int]LineDiffKind
+	// DiffSegments is the same marks pre-folded into scrollbar spans
+	// (see DiffScrollSegments). The workspace folds once per marks
+	// update; the rail used to re-fold every frame, which re-sorted
+	// every marked line on each paint.
+	DiffSegments []ScrollSegment
 }
 
 type BreakpointMarker struct {
@@ -253,8 +269,8 @@ const GutterLeftInset = 16.0
 const GutterCodeGap = 16.0
 
 // FoldGutterW is the fold-marker column's width (the chevron buttons in
-// their own band left of the line numbers, like GoLand's fold gutter and
-// VS Code's glyph margin; added to the gutter only when the language can
+// their own band left of the line numbers, like the fold gutter and
+// glyph margin; added to the gutter only when the language can
 // fold).
 const FoldGutterW = 16.0
 
@@ -311,7 +327,7 @@ func maxScroll(totalLines, visible int) int {
 }
 
 // MaxScrollF is the wheel ease's largest scroll TARGET in fractional rows:
-// the pixel-exact end of the document (VS Code's scrollBeyondLastLine=false).
+// the pixel-exact end of the document (scrollBeyondLastLine=false).
 // The viewport is rarely a whole number of lines tall, so the whole-row
 // ceiling (maxScroll) overshoots it: resting there pins the document's last
 // line above the pane's bottom edge and strands the viewport's bottom slack
@@ -455,6 +471,20 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 	// Cross-line highlighting context per line (raw strings, block
 	// comments, triple quotes): memoized on the buffer per revision.
 	states := buf.LineStates(lang)
+	// Rainbow brackets: per-line start depths (memoized per revision,
+	// the same cost class as the highlight states) plus the caret's
+	// matching bracket — both endpoints get the match background
+	// (the matching-bracket highlight).
+	depths := buf.LineBracketDepths(lang)
+	rainbow := cfg.RainbowBrackets && palette.Brackets[0].A > 0 && hasBrackets(lang)
+	var matchOffs []int
+	if rainbow {
+		if off, _, ok := buf.bracketAtCursor(); ok {
+			if pair, ok := buf.bracketMatchOf(off, lang, states, depths); ok {
+				matchOffs = []int{off, pair}
+			}
+		}
+	}
 	lines := make([]codeLine, len(rows))
 	// Use the laid-out rows, not viewport Y divided by a nominal height.
 	// Their actual positions include any fractional vertical pan and flex
@@ -662,7 +692,7 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 		gutter.Child(markers)
 	}
 	// Fold markers: chevron buttons in their own band LEFT of the line
-	// numbers (GoLand's fold gutter, VS Code's glyph margin). Headers show
+	// numbers (the fold gutter and glyph margin). Headers show
 	// down/right chevrons; clicking toggles the region. The band sits
 	// between the breakpoint strip and the numbers, so a chevron never
 	// overlaps a digit and the hover highlight is a small rounded button
@@ -706,6 +736,56 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 			foldCol = foldCol.Child(cell)
 		}
 		gutter.Child(foldCol)
+	}
+	// Git change bars: a thin colored band between the line numbers and
+	// the divider — added lines carry a green bar, changed lines a blue
+	// one, and a removed range collapses into a wide red marker on the
+	// line where the removal lands. Contiguous lines of one kind merge
+	// into ONE continuous bar (the gutter convention — a changed block
+	// reads as a single strip, never a stack of stubs). The band rides
+	// an absolutely positioned wrapper (the fractional-scroll ease
+	// slides it with the rows), sits inside the numbers' reserved right
+	// padding, and never overlaps a digit or the fold/breakpoint bands.
+	//
+	// The runs paint through one canvas (plain axis-aligned rects, no
+	// corner radii): a div stack per frame cost layout nodes and the
+	// rasterizer's expensive rounded path for what is visually a crisp
+	// 3px bar — the same change the scrollbar's segments got.
+	if cfg.ShowGutter && len(cfg.DiffLines) > 0 {
+		runs := DiffGutterRuns(rows, cfg.DiffLines)
+		colH := float32(len(rows)) * lineH
+		diffCol := elements.NewCanvas(nil, func(bounds geometry.Bounds[geometry.Pixels], w *gpui.Window) {
+			y := float32(0)
+			for _, run := range runs {
+				h := float32(run.Rows) * lineH
+				var bg gc.Background
+				switch run.Kind {
+				case DiffAdded, DiffModified:
+					color := t.Green
+					if run.Kind == DiffModified {
+						color = t.Sky
+					}
+					bg = gc.SolidBackground(color)
+					b := bounds
+					b.Origin.X = b.Origin.X.Add(geometry.Px(GitGutterW - GitMarkW))
+					b.Origin.Y = b.Origin.Y.Add(geometry.Px(y))
+					b.Size = geometry.SizePixels(GitMarkW, h)
+					w.PaintQuad(style.Style{Background: &bg}, b)
+				case DiffDeleted:
+					// Removal markers stay per-line (the wide red tick,
+					// vertically centered on the landing row).
+					bg = gc.SolidBackground(t.Red)
+					b := bounds
+					b.Origin.X = b.Origin.X.Add(geometry.Px(1))
+					b.Origin.Y = b.Origin.Y.Add(geometry.Px(y + (lineH-3)/2))
+					b.Size = geometry.SizePixels(GitGutterW-1, 3)
+					w.PaintQuad(style.Style{Background: &bg}, b)
+				}
+				y += h
+			}
+		}).Absolute().Right(ui.Px(CodeDividerGap)).Top(ui.Px(-frac * lineH)).
+			W(ui.Px(GitGutterW)).H(ui.Px(colH))
+		gutter.Child(diffCol)
 	}
 	// Gutter clicks place the cursor at the clicked line's start (the code
 	// column's own handlers cover only the code area to their right);
@@ -793,6 +873,26 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 		if len(runs) == 0 && l.display == "" {
 			runs = []text.TextRun{{Len: 0, Font: mono(false), Color: t.Text}}
 		}
+		// Rainbow brackets: repaint the six pair characters by their
+		// nesting depth (depths[0] is the depth the line starts at, so
+		// pairs spanning lines keep one color end to end). Matching
+		// brackets then get the match background; selection and find
+		// overlays apply after and win over both.
+		if rainbow {
+			startDepth := 0
+			if i < len(depths) {
+				startDepth = int(depths[i])
+			}
+			if hits, _ := bracketScanIn(l.display, lang, startState, startDepth); len(hits) > 0 {
+				runs = paintBrackets(runs, hits, palette)
+			}
+			for _, off := range matchOffs {
+				if off >= lineStart && off < lineStart+len(lineText) {
+					s0 := l.displayByte(off - lineStart)
+					runs = splitRunsWithBg(runs, s0, s0+1, false, true, nil, &palette.BracketMatch)
+				}
+			}
+		}
 		var spans []Span
 		if cfg.Find != nil {
 			for _, mt := range cfg.Find.MatchesOnLine(lineStart, lineStart+len(lineText)) {
@@ -825,7 +925,7 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 			row = row.Child(textEl)
 		}
 
-		// Collapsed fold placeholder: GoLand's `{…}` inline summary
+		// Collapsed fold placeholder: the `{…}` inline summary
 		// (paren blocks show a bare `…`). Clicking it expands the
 		// region again, like every editor's ghost marker.
 		if f, ok := buf.FoldAt(i); ok && buf.IsFolded(i) {
@@ -857,8 +957,16 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 		// glyph's left bearing - effectively invisible). It blinks like
 		// any other editor: the workspace toggles CaretVisible on a
 		// timer and forces it on around cursor activity.
-		if cursorLine && cfg.CaretVisible {
-			row = row.Child(l.caretOverlay(cursorCol(buf, lineStart), lineH, t.Accent))
+		//
+		// The overlay element stays MOUNTED while the caret blinks —
+		// only the paint callback skips drawing when hidden. Toggling
+		// the element on and off used to restructure the tree twice a
+		// second, renumbering every positional element id after the
+		// editor and wiping the dock panels' per-element state (their
+		// tooltips' 500ms show delay never elapsed on a stationary
+		// hover, so profiler/vulncheck tooltips never appeared).
+		if cursorLine {
+			row = row.Child(l.caretOverlay(cursorCol(buf, lineStart), lineH, t.Accent, cfg.CaretVisible))
 		}
 		l.row = row
 		lines[rowIdx] = l
@@ -915,6 +1023,7 @@ func RenderPane(cfg PaneConfig) gpui.Element {
 			Visible:       visible,
 			ScrollX:       scrollX,
 			Folds:         foldedRanges,
+			DiffSegments:  cfg.DiffSegments,
 			OnScroll:      cfg.OnScroll,
 			OnScrollTo:    cfg.OnScrollTo,
 			OnWheelScroll: cfg.OnWheelScroll,
@@ -1141,6 +1250,11 @@ type railConfig struct {
 	// Folds lists the collapsed ranges: the miniature draws a dim band
 	// over the hidden lines (the upstream editor's folded-region strip).
 	Folds []FoldRange
+	// DiffSegments carries the buffer's git change marks pre-folded
+	// into scrollbar spans (the diff summary the vertical scrollbar
+	// draws on its track; the workspace folds them once per marks
+	// update, never per frame).
+	DiffSegments []ScrollSegment
 }
 
 // renderRail builds the right rail: a code map with a viewport indicator,
@@ -1338,27 +1452,23 @@ func renderRail(cfg railConfig) gpui.Element {
 		// the miniature's top line (only the rows inside the rail
 		// paint, so the per-frame work is bounded by the rail height,
 		// not the document length).
-		foldStarts := map[int]FoldRange{}
-		for _, f := range cfg.Folds {
-			foldStarts[f.Start] = f
-		}
-		inFold := func(line int) bool {
-			for _, f := range cfg.Folds {
-				if line > f.Start && line <= f.End {
-					return true
-				}
-			}
-			return false
-		}
+		//
+		// Fold membership comes from one O(folds + rows) pass (see
+		// minimapFoldMask): the previous per-row linear scan walked
+		// every fold range, and building a fold-header map per frame
+		// allocated thousands of entries on large files — both
+		// burned milliseconds per frame while the wheel ease scrolled.
 		firstRow := int(contentTopF)
 		lastRow := min(total, firstRow+minimapLines+1)
+		inside := minimapFoldMask(cfg.Folds, firstRow, lastRow)
+		headerAt := minimapFoldHeaderAt(cfg.Folds)
 		buf.minimap.prepare(cacheKey, min(total, 2*(minimapLines+1)))
 		for i := firstRow; i < lastRow; i++ {
 			rowY := (float32(i) - contentTopF) * miniH
 			if rowY > cfg.Height {
 				break
 			}
-			if _, ok := foldStarts[i]; ok {
+			if headerAt(i) {
 				// Collapsed region: a dim band stands in for the
 				// hidden lines (nothing else paints on them).
 				st := style.Style{Background: &gc.Background{
@@ -1371,7 +1481,7 @@ func renderRail(cfg railConfig) gpui.Element {
 				w.PaintQuad(st, b)
 				continue
 			}
-			if inFold(i) {
+			if inside[i-firstRow] {
 				continue
 			}
 			if i == cfg.CursorLine {
@@ -1466,6 +1576,41 @@ func renderRail(cfg railConfig) gpui.Element {
 			W(ui.Px(VScrollWidth - 3)).H(ui.Px(thumbH)).
 			Rounded(ui.AbsPx(3)).
 			BgColor(t.Surface2))
+	// Git change segments on the track (the diff summary beside the
+	// minimap): each merged changed region maps to
+	// (line-1)/total .. line/total of the track height — the same
+	// proportional mapping the thumb resolves to, so a segment sits
+	// where its code scrolls past. Segments paint over the thumb along
+	// the track's left edge, like the reference editors' scrollbar.
+	//
+	// All segments paint through ONE canvas (the minimap's approach): a
+	// div per hunk made the scrollbar the heaviest subtree in the window
+	// on large files with many separate hunks — every frame rebuilt,
+	// laid out and rasterized hundreds of absolutely positioned nodes,
+	// and the scroll ease dropped frames badly. The canvas paints plain
+	// axis-aligned rects (no corner radii: 3px-wide pills are
+	// indistinguishable from crisp bars, and the rounded path costs an
+	// order of magnitude more to rasterize). The spans arrive pre-folded
+	// from the workspace (once per marks update) and the pixel projection
+	// merges overlaps, bounding the quad count by the track height.
+	if len(cfg.DiffSegments) > 0 {
+		vscroll = vscroll.Child(elements.NewCanvas(nil, func(bounds geometry.Bounds[geometry.Pixels], w *gpui.Window) {
+			for _, seg := range MergeScrollSegmentsPixel(cfg.DiffSegments, float32(total), trackH) {
+				segColor := t.Green
+				switch seg.Kind {
+				case DiffModified:
+					segColor = t.Sky
+				case DiffDeleted:
+					segColor = t.Red
+				}
+				bg := gc.SolidBackground(segColor)
+				b := bounds
+				b.Origin.Y = b.Origin.Y.Add(geometry.Px(seg.Top))
+				b.Size = geometry.SizePixels(3, max(1, seg.End-seg.Top))
+				w.PaintQuad(style.Style{Background: &bg}, b)
+			}
+		}).Absolute().Left(ui.Px(0)).Top(ui.Px(0)).W(ui.Px(VScrollWidth)).H(ui.Px(trackH)))
+	}
 
 	rail := elements.NewDiv().Flex().W(ui.Px(RailWidth)).FlexShrink(0).
 		BgColor(t.EditorBg).BorderL_1().BorderColor(t.Surface1).
@@ -1490,6 +1635,7 @@ func renderRail(cfg railConfig) gpui.Element {
 func handlePaneKey(cfg PaneConfig, buf *Buffer, edit func(func(*Buffer)),
 	scrollIntoView func(), visible int, ev platform.KeyDownEvent, w *gpui.Window) {
 
+	palette := paletteOf(cfg.Theme)
 	k := ev.Keystroke
 	key := k.Key
 	mods := k.Modifiers
@@ -1573,11 +1719,20 @@ func handlePaneKey(cfg PaneConfig, buf *Buffer, edit func(func(*Buffer)),
 		scrollIntoView()
 		w.Refresh()
 	case "enter":
-		edit(func(b *Buffer) { b.Insert("\n"); b.UnfoldAtCursor() })
+		// Smart Enter between an empty pair ({|}, (|), [|]) expands
+		// the block (smart-enter); otherwise auto-indent: the new line
+		// continues the split line's indentation (one level deeper
+		// after a trailing '{') — see Buffer.NewlineIndent.
+		edit(func(b *Buffer) {
+			if !b.EnterBetweenPair() {
+				b.Insert("\n" + b.NewlineIndent())
+			}
+			b.UnfoldAtCursor()
+		})
 		scrollIntoView()
 		w.Refresh()
 	case "tab":
-		edit(func(b *Buffer) { b.Insert("    "); b.UnfoldAtCursor() })
+		edit(func(b *Buffer) { b.Insert(indentSpaces); b.UnfoldAtCursor() })
 		scrollIntoView()
 		w.Refresh()
 	case "escape":
@@ -1587,7 +1742,12 @@ func handlePaneKey(cfg PaneConfig, buf *Buffer, edit func(func(*Buffer)),
 		}
 	default:
 		if ch := k.KeyChar; ch != "" && !mods.Control && !mods.Alt && !mods.Platform {
-			edit(func(b *Buffer) { b.Insert(ch); b.UnfoldAtCursor() })
+			// Smart pairs: auto-close brackets and quotes, type over
+			// closers, wrap the selection (see Buffer.SmartInsert).
+			edit(func(b *Buffer) {
+				b.SmartInsert(ch, palette, cfg.AutoClosePairs)
+				b.UnfoldAtCursor()
+			})
 			scrollIntoView()
 			w.Refresh()
 		}
@@ -1624,5 +1784,10 @@ func paletteOf(t ui.Theme) Palette {
 		Heading:  t.Accent,
 		Link:     t.Teal,
 		Todo:     t.Orange,
+		// Rainbow brackets: adjacent depths alternate hue families
+		// (blue/orange/purple/green/yellow/red) so nested pairs never
+		// blend into each other on the dark editor background.
+		Brackets:     [6]gc.Hsla{t.Sky, t.Peach, t.Mauve, t.Green, t.Yellow, t.Red},
+		BracketMatch: t.Surface2,
 	}
 }
